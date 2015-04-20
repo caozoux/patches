@@ -1,0 +1,35 @@
+diff --git a/drivers/net/wireless/ti/wlcore/debug.h b/drivers/net/wireless/ti/wlcore/debug.h
+index 0420bd4..6f4c8ab 100644
+--- a/drivers/net/wireless/ti/wlcore/debug.h
++++ b/drivers/net/wireless/ti/wlcore/debug.h
+@@ -77,21 +77,18 @@ extern u32 wl12xx_debug_level;
+ #if defined(CONFIG_DYNAMIC_DEBUG)
+ #define wl1271_debug(level, fmt, arg...) \
+ 	do { \
+-		if (unlikely(level & wl12xx_debug_level)) \
+ 			dynamic_pr_debug(DRIVER_PREFIX fmt "\n", ##arg); \
+ 	} while (0)
+ #else
+ #define wl1271_debug(level, fmt, arg...) \
+ 	do { \
+-		if (unlikely(level & wl12xx_debug_level)) \
+-			printk(KERN_DEBUG pr_fmt(DRIVER_PREFIX fmt "\n"), \
++			printk(KERN_ERR pr_fmt(DRIVER_PREFIX fmt "\n"), \
+ 			       ##arg); \
+ 	} while (0)
+ #endif
+ 
+ #define wl1271_dump(level, prefix, buf, len)				      \
+ 	do {								      \
+-		if (level & wl12xx_debug_level)				      \
+ 			print_hex_dump_debug(DRIVER_PREFIX prefix,	      \
+ 					DUMP_PREFIX_OFFSET, 16, 1,	      \
+ 					buf,				      \
+@@ -101,7 +98,6 @@ extern u32 wl12xx_debug_level;
+ 
+ #define wl1271_dump_ascii(level, prefix, buf, len)			      \
+ 	do {								      \
+-		if (level & wl12xx_debug_level)				      \
+ 			print_hex_dump_debug(DRIVER_PREFIX prefix,	      \
+ 					DUMP_PREFIX_OFFSET, 16, 1,	      \
+ 					buf,				      \

@@ -1,0 +1,52 @@
+diff --git a/drivers/gpu/drm/drm_platform.c b/drivers/gpu/drm/drm_platform.c
+index 21fc820..c346300 100644
+--- a/drivers/gpu/drm/drm_platform.c
++++ b/drivers/gpu/drm/drm_platform.c
+@@ -147,6 +147,7 @@ int drm_platform_init(struct drm_driver *driver, struct platform_device *platfor
+ 
+ 	driver->kdriver.platform_device = platform_device;
+ 	driver->bus = &drm_platform_bus;
++	printk("zz %s\n", __func__);
+ 	return drm_get_platform_dev(platform_device, driver);
+ }
+ EXPORT_SYMBOL(drm_platform_init);
+diff --git a/drivers/gpu/drm/drm_stub.c b/drivers/gpu/drm/drm_stub.c
+index 04c25ce..8776f01 100644
+--- a/drivers/gpu/drm/drm_stub.c
++++ b/drivers/gpu/drm/drm_stub.c
+@@ -104,18 +104,18 @@ void drm_ut_debug_printk(unsigned int request_level,
+ 	struct va_format vaf;
+ 	va_list args;
+ 
+-	if (drm_debug & request_level) {
++	//if (drm_debug & request_level) {
+ 		va_start(args, format);
+ 		vaf.fmt = format;
+ 		vaf.va = &args;
+ 
+ 		if (function_name)
+-			printk(KERN_DEBUG "[%s:%s], %pV", prefix,
++			printk(KERN_INFO "[%s:%s], %pV", prefix,
+ 			       function_name, &vaf);
+ 		else
+-			printk(KERN_DEBUG "%pV", &vaf);
++			printk(KERN_INFO "%pV", &vaf);
+ 		va_end(args);
+-	}
++	//}
+ }
+ EXPORT_SYMBOL(drm_ut_debug_printk);
+ 
+diff --git a/include/drm/drmP.h b/include/drm/drmP.h
+index 1e49058..d63b770 100644
+--- a/include/drm/drmP.h
++++ b/include/drm/drmP.h
+@@ -156,7 +156,7 @@ int drm_err(const char *func, const char *format, ...);
+ /** \name Begin the DRM... */
+ /*@{*/
+ 
+-#define DRM_DEBUG_CODE 2	  /**< Include debugging code if > 1, then
++#define DRM_DEBUG_CODE 0xff	  /**< Include debugging code if > 1, then
+ 				     also include looping detection. */
+ 
+ #define DRM_MAGIC_HASH_ORDER  4  /**< Size of key hash table. Must be power of 2. */
