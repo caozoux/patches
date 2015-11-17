@@ -1,0 +1,135 @@
+diff --git a/arch/arm/common/Makefile b/arch/arm/common/Makefile
+index 4bdc416..791d67f 100644
+--- a/arch/arm/common/Makefile
++++ b/arch/arm/common/Makefile
+@@ -1,7 +1,7 @@
+ #
+ # Makefile for the linux kernel.
+ #
+-
++cflags-y := -DDEBUG
+ obj-y				+= firmware.o
+ 
+ obj-$(CONFIG_ICST)		+= icst.o
+diff --git a/arch/arm/common/edma.c b/arch/arm/common/edma.c
+index 0eb9df8..0f9996c 100644
+--- a/arch/arm/common/edma.c
++++ b/arch/arm/common/edma.c
+@@ -372,6 +372,7 @@ static irqreturn_t dma_irq_handler(int irq, void *data)
+ 	u32 sh_ipr;
+ 	u32 bank;
+ 
++	dev_info(data, "zz dma_irq_handler\n");
+ 	ctlr = irq2ctlr(irq);
+ 	if (ctlr < 0)
+ 		return IRQ_NONE;
+@@ -1294,29 +1295,41 @@ int edma_start(unsigned channel)
+ 
+ 	ctlr = EDMA_CTLR(channel);
+ 	channel = EDMA_CHAN_SLOT(channel);
++	printk("zz %s %d\n", __func__, channel);
+ 
+ 	if (channel < edma_cc[ctlr]->num_channels) {
+ 		int j = channel >> 5;
+ 		unsigned int mask = BIT(channel & 0x1f);
+ 
++		pr_info("EDMA: 26 channel EER%d %08x\n", j,
++			edma_shadow0_read_array(ctlr, SH_EER, 26>>5));
+ 		/* EDMA channels without event association */
+ 		if (test_bit(channel, edma_cc[ctlr]->edma_unused)) {
+-			pr_debug("EDMA: ESR%d %08x\n", j,
++			pr_info("EDMA: ESR%d %08x\n", j,
+ 				edma_shadow0_read_array(ctlr, SH_ESR, j));
+ 			edma_shadow0_write_array(ctlr, SH_ESR, j, mask);
+ 			return 0;
+ 		}
++		/*
++		else {
++			printk("zz %s force %d\n", __func__, channel);
++			edma_shadow0_write_array(ctlr, SH_ESR, j, mask);
++			return 0;
++		}
++		*/
+ 
+ 		/* EDMA channel with event association */
+-		pr_debug("EDMA: ER%d %08x\n", j,
++		pr_info("EDMA: ER%d %08x\n", j,
+ 			edma_shadow0_read_array(ctlr, SH_ER, j));
++		pr_info("EDMA: EER%d %08x\n", j,
++			edma_shadow0_read_array(ctlr, SH_EER, j));
+ 		/* Clear any pending event or error */
+ 		edma_write_array(ctlr, EDMA_ECR, j, mask);
+ 		edma_write_array(ctlr, EDMA_EMCR, j, mask);
+ 		/* Clear any SER */
+ 		edma_shadow0_write_array(ctlr, SH_SECR, j, mask);
+ 		edma_shadow0_write_array(ctlr, SH_EESR, j, mask);
+-		pr_debug("EDMA: EER%d %08x\n", j,
++		pr_info("EDMA: EER%d %08x\n", j,
+ 			edma_shadow0_read_array(ctlr, SH_EER, j));
+ 		return 0;
+ 	}
+diff --git a/drivers/dma/Makefile b/drivers/dma/Makefile
+index d84190e..3bb4680 100644
+--- a/drivers/dma/Makefile
++++ b/drivers/dma/Makefile
+@@ -1,5 +1,7 @@
+-ccflags-$(CONFIG_DMADEVICES_DEBUG)  := -DDEBUG
+-ccflags-$(CONFIG_DMADEVICES_VDEBUG) += -DVERBOSE_DEBUG
++#ccflags-$(CONFIG_DMADEVICES_DEBUG)  := -DDEBUG
++#ccflags-$(CONFIG_DMADEVICES_VDEBUG) += -DVERBOSE_DEBUG
++ccflags-y := -DDEBUG
++ccflags-y += -DVERBOSE_DEBUG
+ 
+ obj-$(CONFIG_DMA_ENGINE) += dmaengine.o
+ obj-$(CONFIG_DMA_VIRTUAL_CHANNELS) += virt-dma.o
+diff --git a/drivers/dma/dmaengine.c b/drivers/dma/dmaengine.c
+index a4068e2..6e370a9 100644
+--- a/drivers/dma/dmaengine.c
++++ b/drivers/dma/dmaengine.c
+@@ -479,7 +479,7 @@ static struct dma_chan *private_candidate(const dma_cap_mask_t *mask,
+ 	struct dma_chan *chan;
+ 
+ 	if (!__dma_device_satisfies_mask(dev, mask)) {
+-		pr_debug("%s: wrong capabilities\n", __func__);
++		//pr_debug("%s: wrong capabilities\n", __func__);
+ 		return NULL;
+ 	}
+ 	/* devices with multiple channels need special handling as we need to
+@@ -494,13 +494,13 @@ static struct dma_chan *private_candidate(const dma_cap_mask_t *mask,
+ 
+ 	list_for_each_entry(chan, &dev->channels, device_node) {
+ 		if (chan->client_count) {
+-			pr_debug("%s: %s busy\n",
+-				 __func__, dma_chan_name(chan));
++			/*pr_debug("%s: %s busy\n",
++				 __func__, dma_chan_name(chan));*/
+ 			continue;
+ 		}
+ 		if (fn && !fn(chan, fn_param)) {
+-			pr_debug("%s: %s filter said false\n",
+-				 __func__, dma_chan_name(chan));
++			/*pr_debug("%s: %s filter said false\n",
++				 __func__, dma_chan_name(chan));*/
+ 			continue;
+ 		}
+ 		return chan;
+diff --git a/drivers/dma/edma.c b/drivers/dma/edma.c
+index 59d80f8..b1fc324 100644
+--- a/drivers/dma/edma.c
++++ b/drivers/dma/edma.c
+@@ -581,6 +581,7 @@ struct dma_async_tx_descriptor *edma_prep_dma_memcpy(
+ 		return NULL;
+ 
+ 	edesc->absync = ret;
++	edesc->echan = echan;
+ 
+ 	/*
+ 	 * Enable intermediate transfer chaining to re-trigger channel
+@@ -956,6 +957,7 @@ static enum dma_status edma_tx_status(struct dma_chan *chan,
+ 	ret = dma_cookie_status(chan, cookie, txstate);
+ 	if (ret == DMA_COMPLETE || !txstate)
+ 		return ret;
++	dump_stack();
+ 
+ 	spin_lock_irqsave(&echan->vchan.lock, flags);
+ 	if (echan->edesc && echan->edesc->vdesc.tx.cookie == cookie)

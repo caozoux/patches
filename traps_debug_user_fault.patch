@@ -1,0 +1,177 @@
+diff --git a/arch/arm/kernel/traps.c b/arch/arm/kernel/traps.c
+index 3f31443..10d4a48 100644
+--- a/arch/arm/kernel/traps.c
++++ b/arch/arm/kernel/traps.c
+@@ -145,6 +145,151 @@ static void dump_instr(const char *lvl, struct pt_regs *regs)
+ 	 */
+ 	fs = get_fs();
+ 	set_fs(KERNEL_DS);
++	printk("zz %s PC:%08x LR:%08x\n", __func__, addr, regs->ARM_lr);
++
++	for (i = -4; i < 1 + !!thumb; i++) {
++		unsigned int val, bad;
++
++		if (thumb)
++			bad = __get_user(val, &((u16 *)addr)[i]);
++		else
++			bad = __get_user(val, &((u32 *)addr)[i]);
++
++		if (!bad)
++			p += sprintf(p, i == 0 ? "(%0*x) " : "%0*x ",
++					width, val);
++		else {
++			p += sprintf(p, "bad PC value");
++			break;
++		}
++	}
++
++	printk("%sCode: %s\n", lvl, str);
++
++	addr = regs->ARM_lr;
++	p=str;
++	for (i = -30; i < 1 + !!thumb; i++) {
++		unsigned int val, bad;
++
++		if (thumb)
++			bad = __get_user(val, &((u16 *)addr)[i]);
++		else
++			bad = __get_user(val, &((u32 *)addr)[i]);
++
++		if (!bad)
++			p += sprintf(p, i == 0 ? "(%0*x) " : "%0*x ",
++					width, val);
++		else {
++			p += sprintf(p, "bad PC value");
++			break;
++		}
++	}
++	printk("LR Code: %s\n", str);
++
++	{
++		struct mm_struct *mm;
++		struct vm_area_struct *vma;
++		struct file *file;
++		vm_flags_t flags;
++		unsigned long start, end;
++		unsigned long ino = 0;
++		unsigned long long pgoff = 0;
++		char *name;
++		char patch_name[128];
++
++		mm = current->mm;
++
++		vma = mm->mmap;
++		while(vma = vma->vm_next) {
++			file = vma->vm_file;
++			mm = vma->vm_mm;
++			if (file) {
++				struct inode *inode;
++
++				file = vma_pr_or_file(vma);
++				inode = file_inode(file);
++				ino = inode->i_ino;
++				pgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
++			}
++
++			flags = vma->vm_flags;
++			start = vma->vm_start;
++			if (stack_guard_page_start(vma, start))
++				start += PAGE_SIZE;
++			end = vma->vm_end;
++			if (stack_guard_page_end(vma, end))
++				end -= PAGE_SIZE;
++			
++			if (file) {
++				name = d_path(&file->f_path,patch_name,128);
++			}
++
++			if (!name) {
++				struct task_struct *task = current;
++				pid_t tid;
++
++				if (!mm) {
++					name = "[vdso]";
++					goto done;
++				}
++
++				if (vma->vm_start <= mm->brk &&
++					vma->vm_end >= mm->start_brk) {
++					name = "[heap]";
++					goto done;
++				}
++
++				tid = vm_is_stack(task, vma, 1);
++
++				if (tid != 0) {
++					/*
++					 * Thread stack in /proc/PID/task/TID/maps or
++					 * the main process stack.
++					 */
++					if (!0|| (vma->vm_start <= mm->start_stack &&
++						vma->vm_end >= mm->start_stack)) {
++						name = "[stack]";
++					} else {
++						/* Thread stack in /proc/PID/maps */
++						//seq_printf(m, "[stack:%d]", tid);
++						name = "[stack:%d]";
++					}
++				}
++			}
++done:
++			printk("%08lx-%08lx %c%c%c%c %08llx %lu %s\n",
++				start,
++				end,
++				flags & VM_READ ? 'r' : '-',
++				flags & VM_WRITE ? 'w' : '-',
++				flags & VM_EXEC ? 'x' : '-',
++				flags & VM_MAYSHARE ? 's' : 'p',
++				pgoff,
++				ino,
++				name ? name : "");
++		}
++	}
++	set_fs(fs);
++}
++
++static void dump_lr_instr(const char *lvl, struct pt_regs *regs)
++{
++	//unsigned long addr = instruction_pointer(regs);
++	unsigned long addr = regs->ARM_lr;
++	const int thumb = thumb_mode(regs);
++	const int width = thumb ? 4 : 8;
++	mm_segment_t fs;
++	char str[sizeof("00000000 ") * 5 + 2 + 1], *p = str;
++	int i;
++	printk("zz %s lr:%08x\n", __func__, addr);
++
++	/*
++	 * We need to switch to kernel mode so that we can use __get_user
++	 * to safely read from kernel space.  Note that we now dump the
++	 * code first, just in case the backtrace kills us.
++	 */
++	fs = get_fs();
++	set_fs(KERNEL_DS);
+ 
+ 	for (i = -4; i < 1 + !!thumb; i++) {
+ 		unsigned int val, bad;
+@@ -338,6 +483,12 @@ void arm_notify_die(const char *str, struct pt_regs *regs,
+ 		current->thread.trap_no = trap;
+ 
+ 		force_sig_info(info->si_signo, info, current);
++#if 0 
++		//zz
++		if(current->pid == 1) {
++			report_bug(regs->ARM_pc, regs);
++		}
++#endif
+ 	} else {
+ 		die(str, regs, err);
+ 	}
+@@ -496,6 +647,7 @@ static int bad_syscall(int n, struct pt_regs *regs)
+ 		printk(KERN_ERR "[%d] %s: obsolete system call %08x.\n",
+ 			task_pid_nr(current), current->comm, n);
+ 		dump_instr(KERN_ERR, regs);
++		//dump_lr_instr(KERN_ERR, regs);
+ 	}
+ #endif
+ 

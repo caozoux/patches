@@ -1,0 +1,32 @@
+diff --git a/drivers/usb/phy/phy.c b/drivers/usb/phy/phy.c
+index 0180eef..20154ba 100644
+--- a/drivers/usb/phy/phy.c
++++ b/drivers/usb/phy/phy.c
+@@ -43,8 +43,11 @@ static struct usb_phy *__usb_find_phy_dev(struct device *dev,
+ 	struct usb_phy_bind *phy_bind = NULL;
+ 
+ 	list_for_each_entry(phy_bind, list, list) {
++		printk("zz %s phy:%s dev:%s phy_idx:%d index:%d\n", __func__
++				, phy_bind->dev_name, dev_name(dev), phy_bind->index, index);
+ 		if (!(strcmp(phy_bind->dev_name, dev_name(dev))) &&
+ 				phy_bind->index == index) {
++			printk("zz %s 1 phy\n", __func__);
+ 			if (phy_bind->phy)
+ 				return phy_bind->phy;
+ 			else
+@@ -367,6 +370,7 @@ int usb_add_phy_dev(struct usb_phy *x)
+ 	struct usb_phy_bind *phy_bind;
+ 	unsigned long flags;
+ 
++	printk("zz %s +\n", __func__);
+ 	if (!x->dev) {
+ 		dev_err(x->dev, "no device provided for PHY\n");
+ 		return -EINVAL;
+@@ -382,6 +386,7 @@ int usb_add_phy_dev(struct usb_phy *x)
+ 	list_add_tail(&x->head, &phy_list);
+ 
+ 	spin_unlock_irqrestore(&phy_lock, flags);
++	printk("zz %s -\n", __func__);
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(usb_add_phy_dev);

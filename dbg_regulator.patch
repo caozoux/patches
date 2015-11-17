@@ -1,0 +1,31 @@
+diff --git a/drivers/regulator/core.c b/drivers/regulator/core.c
+index bac485a..0f092e0 100644
+--- a/drivers/regulator/core.c
++++ b/drivers/regulator/core.c
+@@ -1290,12 +1290,17 @@ static struct regulator_dev *regulator_dev_lookup(struct device *dev,
+ 	if (dev)
+ 		devname = dev_name(dev);
+ 
+-	list_for_each_entry(r, &regulator_list, list)
++	list_for_each_entry(r, &regulator_list, list) {
++		printk("zz %s supply:%s reg:%s\n", __func__, supply, rdev_get_name(r));
+ 		if (strcmp(rdev_get_name(r), supply) == 0)
+ 			return r;
++	}
+ 
+ 	list_for_each_entry(map, &regulator_map_list, list) {
++		printk("zz %s \n", __func__);
+ 		/* If the mapping has a device set up it must match */
++		if (map->dev_name)
++			printk("zz %s supply:%s map:%s\n", __func__, supply, map->dev_name);
+ 		if (map->dev_name &&
+ 		    (!devname || strcmp(map->dev_name, devname)))
+ 			continue;
+@@ -1330,6 +1335,7 @@ static struct regulator *_regulator_get(struct device *dev, const char *id,
+ 	else
+ 		ret = -EPROBE_DEFER;
+ 
++	printk("zz %s dev:%s id:%s \n", __func__, devname, id);
+ 	mutex_lock(&regulator_list_mutex);
+ 
+ 	rdev = regulator_dev_lookup(dev, id, &ret);

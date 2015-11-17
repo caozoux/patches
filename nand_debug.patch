@@ -1,0 +1,12 @@
+diff --git a/drivers/mtd/nand/omap2.c b/drivers/mtd/nand/omap2.c
+index 8eea04b..64533a8 100644
+--- a/drivers/mtd/nand/omap2.c
++++ b/drivers/mtd/nand/omap2.c
+@@ -2023,6 +2023,7 @@ static int omap_nand_probe(struct platform_device *pdev)
+ 		goto return_error;
+ 	}
+ 
++	printk("zz ecclayout->eccbytes:%d, nand_chip->ecc.bytes:%d, mtd->writesize:%d, nand_chip->ecc.size:%d\n",ecclayout->eccbytes, nand_chip->ecc.bytes, mtd->writesize, nand_chip->ecc.size);
+ 	if (info->ecc_opt == OMAP_ECC_HAM1_CODE_SW)
+ 		goto scan_tail;
+ 
