@@ -1,0 +1,62 @@
+From 7fdf646ff308a744a6429703284bd9efc25731e3 Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Thu, 25 Feb 2016 16:28:50 +0800
+Subject: [PATCH 2/5] generic: add remap of uart io in mach io map
+
+eary_print will be invalid when booting into devicemap, tlb will
+flush again, so need to add remap in machine iomap
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ arch/arm/mach-generic/generic.c | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/arch/arm/mach-generic/generic.c b/arch/arm/mach-generic/generic.c
+index 8d2ca92..ead22be 100644
+--- a/arch/arm/mach-generic/generic.c
++++ b/arch/arm/mach-generic/generic.c
+@@ -15,6 +15,13 @@
+ #include <asm/mach/map.h>
+ #include <asm/setup.h>
+ 
++static struct map_desc uart_io_desc __initdata = {
++	.virtual	= 0xf9E09000,
++	.pfn		= __phys_to_pfn(0x44E09000),
++	.length		= SZ_4K,
++	.type		= MT_DEVICE,
++};
++
+ void __init generic_reserve(void)
+ {
+ 	early_print("%s\n", __func__);
+@@ -22,7 +29,8 @@ void __init generic_reserve(void)
+ 
+ void __init generic_map_io(void)
+ {
+-	early_print("%s\n", __func__);
++	early_print("map uart io\n", __func__);
++	iotable_init(&uart_io_desc, 1);
+ }
+ 
+ void __init generic_init_early(void)
+@@ -40,7 +48,7 @@ void __init generic_intc_handle_irq(void)
+ 	early_print("%s\n", __func__);
+ }
+ 
+-void __init generic_evm_init(void)
++void __init generic_init(void)
+ {
+ 	early_print("%s\n", __func__);
+ }
+@@ -67,7 +75,7 @@ MACHINE_START(OMAP3517EVM, "generic board")
+ 	.init_early	= generic_init_early,
+ 	.init_irq	= generic_init_irq,
+ 	.handle_irq	= generic_intc_handle_irq,
+-	.init_machine	= generic_evm_init,
++	.init_machine	= generic_init,
+ 	.init_late	= generic_init_late,
+ 	.init_time	= generic_sync32k_timer_init,
+ 	.restart	= generic_restart,
+-- 
+1.9.1
+

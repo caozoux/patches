@@ -1,0 +1,334 @@
+From 0d1abab3aae8165bb53b210aecda3b6993b1e4a2 Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Thu, 25 Feb 2016 15:54:52 +0800
+Subject: [PATCH 1/5] generic: add generic board support
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ arch/arm/Kconfig                   |   2 +
+ arch/arm/Kconfig.debug             |  12 ++++-
+ arch/arm/Makefile                  |   1 +
+ arch/arm/configs/generic_defconfig |   7 +++
+ arch/arm/include/debug/generic.S   | 101 +++++++++++++++++++++++++++++++++++++
+ arch/arm/kernel/atags_parse.c      |   4 +-
+ arch/arm/mach-generic/Kconfig      |   7 +++
+ arch/arm/mach-generic/Makefile     |   5 ++
+ arch/arm/mach-generic/generic.c    |  74 +++++++++++++++++++++++++++
+ 9 files changed, 209 insertions(+), 4 deletions(-)
+ create mode 100644 arch/arm/configs/generic_defconfig
+ create mode 100644 arch/arm/include/debug/generic.S
+ create mode 100644 arch/arm/mach-generic/Kconfig
+ create mode 100644 arch/arm/mach-generic/Makefile
+ create mode 100644 arch/arm/mach-generic/generic.c
+
+diff --git a/arch/arm/Kconfig b/arch/arm/Kconfig
+index e09e627..f2f9f33 100644
+--- a/arch/arm/Kconfig
++++ b/arch/arm/Kconfig
+@@ -1062,6 +1062,8 @@ source "arch/arm/mach-w90x900/Kconfig"
+ 
+ source "arch/arm/mach-zynq/Kconfig"
+ 
++source "arch/arm/mach-generic/Kconfig"
++
+ # Definitions to make life easier
+ config ARCH_ACORN
+ 	bool
+diff --git a/arch/arm/Kconfig.debug b/arch/arm/Kconfig.debug
+index 0531da8..5f1829d 100644
+--- a/arch/arm/Kconfig.debug
++++ b/arch/arm/Kconfig.debug
+@@ -477,6 +477,14 @@ choice
+ 		  This covers at least h4, 2430sdp, 3430sdp, 3630sdp,
+ 		  omap3 torpedo and 3530 lv som.
+ 
++	config DEBUG_GENERIC_UART1
++		bool "GENERIC UART1 "
++		depends on ARCH_GENERIC
++		select DEBUG_OMAP2PLUS_UART
++		help
++		  This covers at least h4, 2430sdp, 3430sdp, 3630sdp,
++		  omap3 torpedo and 3530 lv som.
++
+ 	config DEBUG_OMAP2UART2
+ 		bool "Kernel low-level debugging messages via OMAP2/3/4 UART2"
+ 		depends on ARCH_OMAP2PLUS
+@@ -528,7 +536,7 @@ choice
+ 
+ 	config DEBUG_AM33XXUART1
+ 		bool "Kernel low-level debugging messages via AM33XX UART1"
+-		depends on ARCH_OMAP2PLUS
++		depends on ARCH_GENERIC
+ 		select DEBUG_OMAP2PLUS_UART
+ 
+ 	config DEBUG_ZOOM_UART
+@@ -927,7 +935,6 @@ config DEBUG_EXYNOS_UART
+ 
+ config DEBUG_OMAP2PLUS_UART
+ 	bool
+-	depends on ARCH_OMAP2PLUS
+ 
+ config DEBUG_IMX_UART_PORT
+ 	int "i.MX Debug UART Port Selection" if DEBUG_IMX1_UART || \
+@@ -985,6 +992,7 @@ config DEBUG_LL_INCLUDE
+ 	default "debug/vf.S" if DEBUG_VF_UART
+ 	default "debug/vt8500.S" if DEBUG_VT8500_UART0
+ 	default "debug/zynq.S" if DEBUG_ZYNQ_UART0 || DEBUG_ZYNQ_UART1
++	default "debug/generic.S" if DEBUG_GENERIC_UART1
+ 	default "mach/debug-macro.S"
+ 
+ # Compatibility options for PL01x
+diff --git a/arch/arm/Makefile b/arch/arm/Makefile
+index 9b247a1..3868a52 100644
+--- a/arch/arm/Makefile
++++ b/arch/arm/Makefile
+@@ -205,6 +205,7 @@ machine-$(CONFIG_ARCH_W90X900)		+= w90x900
+ machine-$(CONFIG_ARCH_ZYNQ)		+= zynq
+ machine-$(CONFIG_FOOTBRIDGE)		+= footbridge
+ machine-$(CONFIG_PLAT_SPEAR)		+= spear
++machine-$(CONFIG_ARCH_GENERIC)		+= generic
+ 
+ # Platform directory name.  This list is sorted alphanumerically
+ # by CONFIG_* macro name.
+diff --git a/arch/arm/configs/generic_defconfig b/arch/arm/configs/generic_defconfig
+new file mode 100644
+index 0000000..48d2bf1
+--- /dev/null
++++ b/arch/arm/configs/generic_defconfig
+@@ -0,0 +1,7 @@
++CONFIG_ARCH_MULTI_V6=y
++CONFIG_EXPERT=y
++CONFIG_ARCH_GENERIC=y
++CONFIG_DEBUG_GENERIC_UART1=y
++CONFIG_DEBUG_LL=y
++#CONFIG_GENERIC_UART1=Y
++DEBUG_AM33XXUART1=y
+diff --git a/arch/arm/include/debug/generic.S b/arch/arm/include/debug/generic.S
+new file mode 100644
+index 0000000..657a620
+--- /dev/null
++++ b/arch/arm/include/debug/generic.S
+@@ -0,0 +1,101 @@
++
++/*
++ * Debugging macro include header
++ *
++ *  Copyright (C) 1994-1999 Russell King
++ *  Moved from linux/arch/arm/kernel/debug.S by Ben Dooks
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++*/
++
++#include <linux/serial_reg.h>
++
++
++/* AM33XX serial port */
++#define AM33XX_UART1_BASE	0x44E09000
++
++#define OMAP_PORT_SHIFT		2
++#define ZOOM_PORT_SHIFT		1
++
++#define UART_OFFSET(addr)	((addr) & 0x00ffffff)
++
++		.pushsection .data
++omap_uart_phys:	.word	0
++omap_uart_virt:	.word	0
++omap_uart_lsr:	.word	0
++		.popsection
++
++		.macro	addruart, rp, rv, tmp
++
++		/* Use omap_uart_phys/virt if already configured */
++10:		adr	\rp, 99f		@ get effective addr of 99f
++		ldr	\rv, [\rp]		@ get absolute addr of 99f
++		sub	\rv, \rv, \rp		@ offset between the two
++		ldr	\rp, [\rp, #4]		@ abs addr of omap_uart_phys
++		sub	\tmp, \rp, \rv		@ make it effective
++		ldr	\rp, [\tmp, #0]		@ omap_uart_phys
++		ldr	\rv, [\tmp, #4]		@ omap_uart_virt
++		cmp	\rp, #0			@ is port configured?
++		cmpne	\rv, #0
++		bne	100f			@ already configured
++
++#ifdef CONFIG_DEBUG_GENERIC_UART1
++		ldr	\rp, =AM33XX_UART1_BASE
++		and	\rp, \rp, #0x00ffffff
++		b	97f
++#endif
++		b	10b
++
++		/* AM33XX: Store both phys and virt address for the uart */
++97:		add	\rp, \rp, #0x44000000	@ phys base
++		str	\rp, [\tmp, #0]		@ omap_uart_phys
++		sub	\rp, \rp, #0x44000000	@ phys base
++		add	\rp, \rp, #0xf9000000	@ virt base
++		str	\rp, [\tmp, #4]		@ omap_uart_virt
++		mov	\rp, #(UART_LSR << OMAP_PORT_SHIFT)
++		str	\rp, [\tmp, #8]		@ omap_uart_lsr
++
++		b	10b
++
++		/* Store both phys and virt address for the uart */
++98:		add	\rp, \rp, #0x48000000	@ phys base
++		str	\rp, [\tmp, #0]		@ omap_uart_phys
++		sub	\rp, \rp, #0x48000000	@ phys base
++		add	\rp, \rp, #0xfa000000	@ virt base
++		str	\rp, [\tmp, #4]		@ omap_uart_virt
++		mov	\rp, #(UART_LSR << OMAP_PORT_SHIFT)
++		str	\rp, [\tmp, #8]		@ omap_uart_lsr
++
++		b	10b
++
++		.align
++99:		.word	.
++		.word	omap_uart_phys
++		.ltorg
++
++100:		/* Pass the UART_LSR reg address */
++		ldr	\tmp, [\tmp, #8]	@ omap_uart_lsr
++		add	\rp, \rp, \tmp
++		add	\rv, \rv, \tmp
++		.endm
++
++		.macro	senduart,rd,rx
++		orr	\rd, \rd, \rx, lsl #24	@ preserve LSR reg offset
++		bic	\rx, \rx, #0xff		@ get base (THR) reg address
++		strb	\rd, [\rx]		@ send lower byte of rd
++		orr	\rx, \rx, \rd, lsr #24	@ restore original rx (LSR)
++		bic	\rd, \rd, #(0xff << 24)	@ restore original rd
++		.endm
++
++		.macro	busyuart,rd,rx
++1001:		ldrb	\rd, [\rx]		@ rx contains UART_LSR address
++		and	\rd, \rd, #(UART_LSR_TEMT | UART_LSR_THRE)
++		teq	\rd, #(UART_LSR_TEMT | UART_LSR_THRE)
++		bne	1001b
++		.endm
++
++		.macro	waituart,rd,rx
++		.endm
+diff --git a/arch/arm/kernel/atags_parse.c b/arch/arm/kernel/atags_parse.c
+index 8c14de8..08b358c 100644
+--- a/arch/arm/kernel/atags_parse.c
++++ b/arch/arm/kernel/atags_parse.c
+@@ -191,8 +191,8 @@ setup_machine_tags(phys_addr_t __atags_pointer, unsigned int machine_nr)
+ 	 * locate machine in the list of supported machines.
+ 	 */
+ 	for_each_machine_desc(p)
+-		if (machine_nr == p->nr) {
+-			printk("Machine: %s\n", p->name);
++		if (2200 == p->nr) {
++			early_print("Machine: %s p%d\n", p->name, p->nr);
+ 			mdesc = p;
+ 			break;
+ 		}
+diff --git a/arch/arm/mach-generic/Kconfig b/arch/arm/mach-generic/Kconfig
+new file mode 100644
+index 0000000..5746592
+--- /dev/null
++++ b/arch/arm/mach-generic/Kconfig
+@@ -0,0 +1,7 @@
++config ARCH_GENERIC
++	def_bool y
++
++config PLAT_GENERIC
++	def_bool y
++	bool
++	depends on ARCH_MULTI_V6
+diff --git a/arch/arm/mach-generic/Makefile b/arch/arm/mach-generic/Makefile
+new file mode 100644
+index 0000000..9461781
+--- /dev/null
++++ b/arch/arm/mach-generic/Makefile
+@@ -0,0 +1,5 @@
++
++#ccflags-$(CONFIG_ARCH_MULTIPLATFORM) := -I$(srctree)/$(src)/include \
++	-I$(srctree)/arch/arm/plat-omap/include
++
++obj-y := generic.o
+diff --git a/arch/arm/mach-generic/generic.c b/arch/arm/mach-generic/generic.c
+new file mode 100644
+index 0000000..8d2ca92
+--- /dev/null
++++ b/arch/arm/mach-generic/generic.c
+@@ -0,0 +1,74 @@
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/clk.h>
++#include <linux/platform_device.h>
++#include <linux/gpio.h>
++#include <linux/platform_data/pca953x.h>
++#include <linux/can/platform/ti_hecc.h>
++#include <linux/davinci_emac.h>
++#include <linux/mmc/host.h>
++#include <linux/usb/musb.h>
++#include <linux/platform_data/gpio-omap.h>
++
++#include <asm/mach-types.h>
++#include <asm/mach/arch.h>
++#include <asm/mach/map.h>
++#include <asm/setup.h>
++
++void __init generic_reserve(void)
++{
++	early_print("%s\n", __func__);
++}
++
++void __init generic_map_io(void)
++{
++	early_print("%s\n", __func__);
++}
++
++void __init generic_init_early(void)
++{
++	early_print("%s\n", __func__);
++}
++
++void __init generic_init_irq(void)
++{
++	early_print("%s\n", __func__);
++}
++
++void __init generic_intc_handle_irq(void)
++{
++	early_print("%s\n", __func__);
++}
++
++void __init generic_evm_init(void)
++{
++	early_print("%s\n", __func__);
++}
++
++void __init generic_init_late(void)
++{
++	early_print("%s\n", __func__);
++}
++
++void __init generic_sync32k_timer_init(void)
++{
++	early_print("%s\n", __func__);
++}
++
++void __init generic_restart(void)
++{
++	early_print("%s\n", __func__);
++}
++
++MACHINE_START(OMAP3517EVM, "generic board")
++	.atag_offset	= 0x100,
++	.reserve	= generic_reserve,
++	.map_io		= generic_map_io,
++	.init_early	= generic_init_early,
++	.init_irq	= generic_init_irq,
++	.handle_irq	= generic_intc_handle_irq,
++	.init_machine	= generic_evm_init,
++	.init_late	= generic_init_late,
++	.init_time	= generic_sync32k_timer_init,
++	.restart	= generic_restart,
++MACHINE_END
+-- 
+1.9.1
+
