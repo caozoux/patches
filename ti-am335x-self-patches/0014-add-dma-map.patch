@@ -1,0 +1,1134 @@
+From 06b2522f9871da4010dee2863bd26b165910cbe5 Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Fri, 22 Apr 2016 16:01:26 +0800
+Subject: [PATCH 14/14] add dma map
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ drivers/net/ethernet/Makefile           |   1 +
+ drivers/net/ethernet/generic_ale.c      | 232 +++++++++++++++++++++++++
+ drivers/net/ethernet/generic_dbg.c      | 290 +++++++++++++++++++++++++++++++
+ drivers/net/ethernet/generic_mdio.c     |   1 -
+ drivers/net/ethernet/generic_net.c      |  95 +---------
+ drivers/net/ethernet/generic_net.h      |  93 +++++++++-
+ drivers/net/ethernet/generic_transfer.c | 298 ++++++++++++++++++++++++++++++++
+ 7 files changed, 918 insertions(+), 92 deletions(-)
+ create mode 100644 drivers/net/ethernet/generic_ale.c
+ create mode 100644 drivers/net/ethernet/generic_dbg.c
+ create mode 100644 drivers/net/ethernet/generic_transfer.c
+
+diff --git a/drivers/net/ethernet/Makefile b/drivers/net/ethernet/Makefile
+index 8c1f1ec..5dcd44d 100644
+--- a/drivers/net/ethernet/Makefile
++++ b/drivers/net/ethernet/Makefile
+@@ -83,3 +83,4 @@ obj-y 							+= generic_mdio.o
+ obj-y 							+= generic_net.o
+ obj-y                           += generic_dbg.o
+ obj-y                           += generic_ale.o
++obj-y                           += generic_transfer.o
+diff --git a/drivers/net/ethernet/generic_ale.c b/drivers/net/ethernet/generic_ale.c
+new file mode 100644
+index 0000000..bab1d4e
+--- /dev/null
++++ b/drivers/net/ethernet/generic_ale.c
+@@ -0,0 +1,232 @@
++#include <linux/kernel.h>
++#include <linux/io.h>
++#include <linux/clk.h>
++#include <linux/timer.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/irqreturn.h>
++#include <linux/interrupt.h>
++#include <linux/if_ether.h>
++#include <linux/etherdevice.h>
++#include <linux/netdevice.h>
++#include <linux/net_tstamp.h>
++#include <linux/phy.h>
++#include <linux/workqueue.h>
++#include <linux/delay.h>
++#include <linux/pm_runtime.h>
++#include <linux/of.h>
++#include <linux/of_net.h>
++#include <linux/of_device.h>
++#include <linux/if_vlan.h>
++#include <linux/net_switch_config.h>
++#include <linux/pinctrl/consumer.h>
++#include "generic_net.h"
++
++#define BITMASK(bits)		(BIT(bits) - 1)
++#define ALE_ENTRY_BITS		68
++#define ALE_ENTRY_WORDS		DIV_ROUND_UP(ALE_ENTRY_BITS, 32)
++
++/* ALE Registers */
++#define ALE_CONTROL		0x08
++#define ALE_UNKNOWNVLAN		0x18
++#define ALE_TABLE_CONTROL	0x20
++#define ALE_TABLE		0x34
++#define ALE_PORTCTL		0x40
++
++#define ALE_TABLE_WRITE		BIT(31)
++
++#define ALE_TYPE_FREE			0
++#define ALE_TYPE_ADDR			1
++#define ALE_TYPE_VLAN			2
++#define ALE_TYPE_VLAN_ADDR		3
++
++#define ALE_UCAST_PERSISTANT		0
++#define ALE_UCAST_UNTOUCHED		1
++#define ALE_UCAST_OUI			2
++#define ALE_UCAST_TOUCHED		3
++
++#define ALE_MCAST_FWD			0
++#define ALE_MCAST_BLOCK_LEARN_FWD	1
++#define ALE_MCAST_FWD_LEARN		2
++#define ALE_MCAST_FWD_2			3
++
++/* ALE unicast entry flags - passed into cpsw_ale_add_ucast() */
++#define ALE_SECURE	1
++#define ALE_BLOCKED	2
++
++enum cpsw_ale_port_state {
++	ALE_PORT_STATE_DISABLE	= 0x00,
++	ALE_PORT_STATE_BLOCK	= 0x01,
++	ALE_PORT_STATE_LEARN	= 0x02,
++	ALE_PORT_STATE_FORWARD	= 0x03,
++};
++
++static inline int cpsw_ale_get_field(u32 *ale_entry, u32 start, u32 bits)
++{
++	int idx;
++
++	idx    = start / 32;
++	start -= idx * 32;
++	idx    = 2 - idx; /* flip */
++	return (ale_entry[idx] >> start) & BITMASK(bits);
++}
++
++static inline void cpsw_ale_set_field(u32 *ale_entry, u32 start, u32 bits,
++				      u32 value)
++{
++	int idx;
++
++	value &= BITMASK(bits);
++	idx    = start / 32;
++	start -= idx * 32;
++	idx    = 2 - idx; /* flip */
++	ale_entry[idx] &= ~(BITMASK(bits) << start);
++	ale_entry[idx] |=  (value << start);
++}
++
++#define DEFINE_ALE_FIELD(name, start, bits)				\
++static inline int cpsw_ale_get_##name(u32 *ale_entry)			\
++{									\
++	return cpsw_ale_get_field(ale_entry, start, bits);		\
++}									\
++static inline void cpsw_ale_set_##name(u32 *ale_entry, u32 value)	\
++{									\
++	cpsw_ale_set_field(ale_entry, start, bits, value);		\
++}
++
++DEFINE_ALE_FIELD(entry_type,		60,	2)
++DEFINE_ALE_FIELD(mcast_state,		62,	2)
++DEFINE_ALE_FIELD(port_mask,		66,	3)
++DEFINE_ALE_FIELD(ucast_type,		62,	2)
++DEFINE_ALE_FIELD(port_num,		66,	2)
++DEFINE_ALE_FIELD(blocked,		65,	1)
++DEFINE_ALE_FIELD(secure,		64,	1)
++DEFINE_ALE_FIELD(mcast,			40,	1)
++
++/* The MAC address field in the ALE entry cannot be macroized as above */
++static inline void cpsw_ale_get_addr(u32 *ale_entry, u8 *addr)
++{
++	int i;
++
++	for (i = 0; i < 6; i++)
++		addr[i] = cpsw_ale_get_field(ale_entry, 40 - 8*i, 8);
++}
++
++static inline void cpsw_ale_set_addr(u32 *ale_entry, const u8 *addr)
++{
++	int i;
++
++	for (i = 0; i < 6; i++)
++		cpsw_ale_set_field(ale_entry, 40 - 8*i, 8, addr[i]);
++}
++
++static int cpsw_ale_read(struct cpsw_ale_regs *ale_regs, int idx, u32 *ale_entry)
++{
++	int i;
++
++	__raw_writel(idx, ale_regs + ALE_TABLE_CONTROL);
++
++	for (i = 0; i < ALE_ENTRY_WORDS; i++)
++		ale_entry[i] = __raw_readl(ale_regs + ALE_TABLE + 4 * i);
++
++	return idx;
++}
++
++static int cpsw_ale_write(struct cpsw_ale_regs *ale_regs, int idx, u32 *ale_entry)
++{
++	int i;
++
++	for (i = 0; i < ALE_ENTRY_WORDS; i++)
++		__raw_writel(ale_entry[i], ale_regs + ALE_TABLE + 4 * i);
++
++	__raw_writel(idx | ALE_TABLE_WRITE, ale_regs + ALE_TABLE_CONTROL);
++
++	return idx;
++}
++
++static int cpsw_ale_match_addr(struct cpsw_ale_regs *ale_regs, const u8 *addr)
++{
++	u32 ale_entry[ALE_ENTRY_WORDS];
++	int type, idx;
++
++	for (idx = 0; idx < 1024; idx++) {
++		u8 entry_addr[6];
++
++		cpsw_ale_read(ale_regs, idx, ale_entry);
++		type = cpsw_ale_get_entry_type(ale_entry);
++		if (type != ALE_TYPE_ADDR && type != ALE_TYPE_VLAN_ADDR)
++			continue;
++		cpsw_ale_get_addr(ale_entry, entry_addr);
++		if (memcmp(entry_addr, addr, 6) == 0)
++			return idx;
++	}
++	return -ENOENT;
++}
++
++static int cpsw_ale_match_free(struct cpsw_ale_regs *ale_regs)
++{
++	u32 ale_entry[ALE_ENTRY_WORDS];
++	int type, idx;
++
++	for (idx = 0; idx < 1024; idx++) {
++		cpsw_ale_read(ale_regs, idx, ale_entry);
++		type = cpsw_ale_get_entry_type(ale_entry);
++		if (type == ALE_TYPE_FREE)
++			return idx;
++	}
++
++	return -ENOENT;
++}
++
++int cpsw_ale_add_ucast(struct cpsw_ale_regs *ale_regs, const u8 *addr,
++			      int port, int flags)
++{
++	u32 ale_entry[ALE_ENTRY_WORDS] = {0, 0, 0};
++	int idx;
++
++	cpsw_ale_set_entry_type(ale_entry, ALE_TYPE_ADDR);
++	cpsw_ale_set_addr(ale_entry, addr);
++	cpsw_ale_set_ucast_type(ale_entry, ALE_UCAST_PERSISTANT);
++	cpsw_ale_set_secure(ale_entry, (flags & ALE_SECURE) ? 1 : 0);
++	cpsw_ale_set_blocked(ale_entry, (flags & ALE_BLOCKED) ? 1 : 0);
++	cpsw_ale_set_port_num(ale_entry, port);
++
++	idx = cpsw_ale_match_addr(ale_regs, addr);
++	if (idx < 0)
++		idx = cpsw_ale_match_free(ale_regs);
++	if (idx < 0)
++		return -ENOMEM;
++
++	printk("cpsw_ale_add_ucast idx:%0d %08x %08x %08x\n", idx, addr[0], addr[1], addr[2]);
++	cpsw_ale_write(ale_regs, idx, ale_entry);
++	return 0;
++}
++
++int cpsw_ale_add_mcast(struct cpsw_ale_regs *priv, const u8 *addr,
++			      int port_mask)
++{
++	u32 ale_entry[ALE_ENTRY_WORDS] = {0, 0, 0};
++	int idx, mask;
++
++	idx = cpsw_ale_match_addr(priv, addr);
++	if (idx >= 0)
++		cpsw_ale_read(priv, idx, ale_entry);
++
++	cpsw_ale_set_entry_type(ale_entry, ALE_TYPE_ADDR);
++	cpsw_ale_set_addr(ale_entry, addr);
++	cpsw_ale_set_mcast_state(ale_entry, ALE_MCAST_FWD_2);
++
++	mask = cpsw_ale_get_port_mask(ale_entry);
++	port_mask |= mask;
++	cpsw_ale_set_port_mask(ale_entry, port_mask);
++
++	if (idx < 0)
++		idx = cpsw_ale_match_free(priv);
++	if (idx < 0)
++		return -ENOMEM;
++
++	printk("cpsw_ale_add_mcast idx:%0d %08x %08x %08x\n", idx, ale_entry[0], ale_entry[1], ale_entry[2]);
++	cpsw_ale_write(priv, idx, ale_entry);
++	return 0;
++}
++
+diff --git a/drivers/net/ethernet/generic_dbg.c b/drivers/net/ethernet/generic_dbg.c
+new file mode 100644
+index 0000000..d670996
+--- /dev/null
++++ b/drivers/net/ethernet/generic_dbg.c
+@@ -0,0 +1,290 @@
++#include <linux/kernel.h>
++#include <linux/io.h>
++#include <linux/clk.h>
++#include <linux/timer.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/irqreturn.h>
++#include <linux/interrupt.h>
++#include <linux/if_ether.h>
++#include <linux/etherdevice.h>
++#include <linux/netdevice.h>
++#include <linux/net_tstamp.h>
++#include <linux/phy.h>
++#include <linux/workqueue.h>
++#include <linux/delay.h>
++#include <linux/pm_runtime.h>
++#include <linux/of.h>
++#include <linux/of_net.h>
++#include <linux/of_device.h>
++#include <linux/if_vlan.h>
++#include <linux/net_switch_config.h>
++#include <linux/pinctrl/consumer.h>
++
++#include "generic_net.h"
++
++void dump_cpsw_regs(void __iomem *base)
++{
++#if 0
++//#define CPSW_SS 	  0x4A100000
++printk("D_VER:%08x\n",__raw_readl(base+D_VER));
++printk("CONTROL:%08x\n",__raw_readl(base+CONTROL));
++printk("SOFT_RESET:%08x\n",__raw_readl(base+SOFT_RESET));
++printk("STAT_PORT_EN:%08x\n",__raw_readl(base+STAT_PORT_EN));
++printk("PTYPE:%08x\n",__raw_readl(base+PTYPE));
++printk("SOFT_IDLE:%08x\n",__raw_readl(base+SOFT_IDLE));
++printk("THRU_RATE:%08x\n",__raw_readl(base+THRU_RATE));
++printk("GAP_THRESH:%08x\n",__raw_readl(base+GAP_THRESH));
++printk("TX_START_WDS:%08x\n",__raw_readl(base+TX_START_WDS));
++printk("FLOW_CONTROL:%08x\n",__raw_readl(base+FLOW_CONTROL));
++printk("VLAN_LTYPE:%08x\n",__raw_readl(base+VLAN_LTYPE));
++printk("TS_LTYPE:%08x\n",__raw_readl(base+TS_LTYPE));
++printk("DLR_LTYPE:%08x\n",__raw_readl(base+DLR_LTYPE));
++//#define CPSW_PORT     0x4A100100
++printk("P0_CONTROL:%08x\n",__raw_readl(base+P0_CONTROL));
++printk("P0_MAX_BLKS  :%08x\n",__raw_readl(base+P0_MAX_BLKS));
++printk("P0_BLK_CNT:%08x\n",__raw_readl(base+P0_BLK_CNT));
++printk("P0_TX_IN_CTL:%08x\n",__raw_readl(base+P0_TX_IN_CTL));
++printk("P0_PORT_VLAN:%08x\n",__raw_readl(base+P0_PORT_VLAN));
++printk("P0_TX_PRI_MAP:%08x\n",__raw_readl(base+P0_TX_PRI_MAP));
++printk("P0_CPDMA_TX_PRI_MAP:%08x\n",__raw_readl(base+P0_CPDMA_TX_PRI_MAP));
++printk("P0_CPDMA_RX_CH_MAP:%08x\n",__raw_readl(base+P0_CPDMA_RX_CH_MAP));
++printk("P0_RX_DSCP_PRI_MAP0:%08x\n",__raw_readl(base+P0_RX_DSCP_PRI_MAP0));
++printk("P0_RX_DSCP_PRI_MAP1:%08x\n",__raw_readl(base+P0_RX_DSCP_PRI_MAP1));
++printk("P0_RX_DSCP_PRI_MAP2:%08x\n",__raw_readl(base+P0_RX_DSCP_PRI_MAP2));
++printk("P0_RX_DSCP_PRI_MAP3:%08x\n",__raw_readl(base+P0_RX_DSCP_PRI_MAP3));
++printk("P0_RX_DSCP_PRI_MAP4:%08x\n",__raw_readl(base+P0_RX_DSCP_PRI_MAP4));
++printk("P0_RX_DSCP_PRI_MAP5:%08x\n",__raw_readl(base+P0_RX_DSCP_PRI_MAP5));
++printk("P0_RX_DSCP_PRI_MAP6:%08x\n",__raw_readl(base+P0_RX_DSCP_PRI_MAP6));
++printk("P0_RX_DSCP_PRI_MAP7:%08x\n",__raw_readl(base+P0_RX_DSCP_PRI_MAP7));
++printk("P1_CONTROL:%08x\n",__raw_readl(base+P1_CONTROL));
++printk("P1_MAX_BLKS:%08x\n",__raw_readl(base+P1_MAX_BLKS));
++printk("P1_BLK_CNT:%08x\n",__raw_readl(base+P1_BLK_CNT));
++printk("P1_TX_IN_CTL:%08x\n",__raw_readl(base+P1_TX_IN_CTL));
++//#define CPSW_CPDMA    0x4A100800
++printk("TX_IDVER:%08x\n",__raw_readl(base+TX_IDVER));
++printk("TX_CONTROL:%08x\n",__raw_readl(base+TX_CONTROL));
++printk("TX_TEARDOWN:%08x\n",__raw_readl(base+TX_TEARDOWN));
++printk("RX_IDVER:%08x\n",__raw_readl(base+RX_IDVER));
++printk("RX_CONTROL:%08x\n",__raw_readl(base+RX_CONTROL));
++printk("RX_TEARDOWN:%08x\n",__raw_readl(base+RX_TEARDOWN));
++printk("CPDMA_SOFT_RESET:%08x\n",__raw_readl(base+CPDMA_SOFT_RESET));
++printk("DMACONTROL:%08x\n",__raw_readl(base+DMACONTROL));
++printk("DMASTATUS:%08x\n",__raw_readl(base+DMASTATUS));
++printk("RX_BUFFER_OFFSET:%08x\n",__raw_readl(base+RX_BUFFER_OFFSET));
++printk("EMCONTROL:%08x\n",__raw_readl(base+EMCONTROL));
++printk("TX_PRI0_RATE:%08x\n",__raw_readl(base+TX_PRI0_RATE));
++printk("TX_PRI1_RATE:%08x\n",__raw_readl(base+TX_PRI1_RATE));
++printk("TX_PRI2_RATE:%08x\n",__raw_readl(base+TX_PRI2_RATE));
++printk("TX_PRI3_RATE:%08x\n",__raw_readl(base+TX_PRI3_RATE));
++printk("TX_PRI4_RATE:%08x\n",__raw_readl(base+TX_PRI4_RATE));
++printk("TX_PRI5_RATE:%08x\n",__raw_readl(base+TX_PRI5_RATE));
++printk("TX_PRI6_RATE:%08x\n",__raw_readl(base+TX_PRI6_RATE));
++printk("TX_PRI7_RATE:%08x\n",__raw_readl(base+TX_PRI7_RATE));
++printk("TX_INTSTAT_RAW:%08x\n",__raw_readl(base+TX_INTSTAT_RAW));
++printk("TX_INTSTAT_MASKED:%08x\n",__raw_readl(base+TX_INTSTAT_MASKED));
++printk("TX_INTMASK_SET:%08x\n",__raw_readl(base+TX_INTMASK_SET));
++printk("TX_INTMASK_CLEAR:%08x\n",__raw_readl(base+TX_INTMASK_CLEAR));
++printk("CPDMA_IN_VECTOR:%08x\n",__raw_readl(base+CPDMA_IN_VECTOR));
++printk("CPDMA_EOI_VECTOR:%08x\n",__raw_readl(base+CPDMA_EOI_VECTOR));
++printk("RX_INTSTAT_RAW:%08x\n",__raw_readl(base+RX_INTSTAT_RAW));
++printk("RX_INTSTAT_MASKED:%08x\n",__raw_readl(base+RX_INTSTAT_MASKED));
++printk("RX_INTMASK_SET:%08x\n",__raw_readl(base+RX_INTMASK_SET));
++printk("RX_INTMASK_CLEAR:%08x\n",__raw_readl(base+RX_INTMASK_CLEAR));
++printk("DMA_INTSTAT_RAW:%08x\n",__raw_readl(base+DMA_INTSTAT_RAW));
++printk("DMA_INTSTAT_MASKED:%08x\n",__raw_readl(base+DMA_INTSTAT_MASKED));
++printk("DMA_INTMASK_SET:%08x\n",__raw_readl(base+DMA_INTMASK_SET));
++printk("DMA_INTMASK_CLEAR:%08x\n",__raw_readl(base+DMA_INTMASK_CLEAR));
++printk("RX0_PENDTHRESH:%08x\n",__raw_readl(base+RX0_PENDTHRESH));
++//#define CPSW_STATS    0x4A100900
++printk("Good_RX_FRAME:%08x\n",__raw_readl(base+Good_RX_FRAME));
++printk("Broadcast_RX_FRAME:%08x\n",__raw_readl(base+Broadcast_RX_FRAME));
++printk("Multicast_RX_FRAME  :%08x\n",__raw_readl(base+Multicast_RX_FRAME  ));
++printk("Pause_RX_FRAME  :%08x\n",__raw_readl(base+Pause_RX_FRAME  ));
++printk("Rx_CRC_ERR:%08x\n",__raw_readl(base+Rx_CRC_ERR));
++printk("Rx_ALIGN_ERR:%08x\n",__raw_readl(base+Rx_ALIGN_ERR));
++printk("Oversize_RX_FRAME    :%08x\n",__raw_readl(base+Oversize_RX_FRAME    ));
++printk("Rx_JAB:%08x\n",__raw_readl(base+Rx_JAB));
++printk("Undersize_RX_FRAME    :%08x\n",__raw_readl(base+Undersize_RX_FRAME    ));
++printk("Rx_FRAG:%08x\n",__raw_readl(base+Rx_FRAG));
++printk("Rx_OCT:%08x\n",__raw_readl(base+Rx_OCT));
++printk("Good_TX_FRAME:%08x\n",__raw_readl(base+Good_TX_FRAME));
++printk("Broadcast_TX_FRAME  :%08x\n",__raw_readl(base+Broadcast_TX_FRAME  ));
++printk("Multicast_TX_FRAME  :%08x\n",__raw_readl(base+Multicast_TX_FRAME  ));
++printk("Pause_TX_FRAME  :%08x\n",__raw_readl(base+Pause_TX_FRAME  ));
++printk("Deferred_TX_FRAME  :%08x\n",__raw_readl(base+Deferred_TX_FRAME  ));
++printk("Collisions_TX:%08x\n",__raw_readl(base+Collisions_TX));
++printk("Single_TX:%08x\n",__raw_readl(base+Single_TX));
++printk("Multiple_COL_TX:%08x\n",__raw_readl(base+Multiple_COL_TX));
++printk("Excessive_COL:%08x\n",__raw_readl(base+Excessive_COL));
++printk("Late_COL:%08x\n",__raw_readl(base+Late_COL));
++printk("Tx_UNDE:%08x\n",__raw_readl(base+Tx_UNDER));
++printk("Carrier_SEN:%08x\n",__raw_readl(base+Carrier_SEN));
++printk("Tx_COT:%08x\n",__raw_readl(base+Tx_COT));
++printk("Rx_TX_64:%08x\n",__raw_readl(base+Rx_TX_64));
++printk("Rx_TX_128:%08x\n",__raw_readl(base+Rx_TX_128));
++printk("Rx_TX_255:%08x\n",__raw_readl(base+Rx_TX_255));
++printk("Rx_TX_511:%08x\n",__raw_readl(base+Rx_TX_511));
++printk("Rx_TX_512:%08x\n",__raw_readl(base+Rx_TX_512));
++printk("Rx_TX_1024:%08x\n",__raw_readl(base+Rx_TX_1024));
++printk("Net_OCT:%08x\n",__raw_readl(base+Net_OCT));
++printk("Rx_S_FRAM:%08x\n",__raw_readl(base+Rx_S_FRAM));
++printk("Rx_M_FRAM:%08x\n",__raw_readl(base+Rx_M_FRAM));
++printk("Rx_DMA_OVE:%08x\n",__raw_readl(base+Rx_DMA_OVE));
++
++//#define CPSW_STATERAM 0x4A100A00
++printk("TX0_HDP:%08x\n",__raw_readl(base+TX0_HDP));
++printk("TX1_HDP:%08x\n",__raw_readl(base+TX1_HDP));
++printk("TX2_HDP:%08x\n",__raw_readl(base+TX2_HDP));
++printk("TX3_HDP:%08x\n",__raw_readl(base+TX3_HDP));
++printk("TX4_HDP:%08x\n",__raw_readl(base+TX4_HDP));
++printk("TX5_HDP:%08x\n",__raw_readl(base+TX5_HDP));
++printk("TX6_HDP:%08x\n",__raw_readl(base+TX6_HDP));
++printk("TX7_HDP:%08x\n",__raw_readl(base+TX7_HDP));
++printk("RX0_HDP:%08x\n",__raw_readl(base+RX0_HDP));
++printk("RX1_HDP:%08x\n",__raw_readl(base+RX1_HDP));
++printk("RX2_HDP:%08x\n",__raw_readl(base+RX2_HDP));
++printk("RX3_HDP:%08x\n",__raw_readl(base+RX3_HDP));
++printk("RX4_HDP:%08x\n",__raw_readl(base+RX4_HDP));
++printk("RX5_HDP:%08x\n",__raw_readl(base+RX5_HDP));
++printk("RX6_HDP:%08x\n",__raw_readl(base+RX6_HDP));
++printk("RX7_HDP:%08x\n",__raw_readl(base+RX7_HDP));
++printk("TX0_CP:%08x\n",__raw_readl(base+TX0_CP));
++printk("TX1_CP:%08x\n",__raw_readl(base+TX1_CP));
++printk("TX2_CP:%08x\n",__raw_readl(base+TX2_CP));
++printk("TX3_CP:%08x\n",__raw_readl(base+TX3_CP));
++printk("TX4_CP:%08x\n",__raw_readl(base+TX4_CP));
++printk("TX5_CP:%08x\n",__raw_readl(base+TX5_CP));
++printk("TX6_CP:%08x\n",__raw_readl(base+TX6_CP));
++printk("TX7_CP:%08x\n",__raw_readl(base+TX7_CP));
++printk("RX0_CP:%08x\n",__raw_readl(base+RX0_CP));
++printk("RX1_CP:%08x\n",__raw_readl(base+RX1_CP));
++printk("RX2_CP:%08x\n",__raw_readl(base+RX2_CP));
++printk("RX3_CP:%08x\n",__raw_readl(base+RX3_CP));
++//#define CPSW_CPTS     0x4A100C00
++printk("CPTS_IDVER:%08x\n",__raw_readl(base+CPTS_IDVER));
++printk("CPTS_CONTROL:%08x\n",__raw_readl(base+CPTS_CONTROL));
++printk("CPTS_TS_PUSH:%08x\n",__raw_readl(base+CPTS_TS_PUSH));
++printk("CPTS_TS_LOAD_VAL:%08x\n",__raw_readl(base+CPTS_TS_LOAD_VAL));
++printk("CPTS_TS_LOAD_EN:%08x\n",__raw_readl(base+CPTS_TS_LOAD_EN));
++printk("CPTS_INTSTAT_RAW:%08x\n",__raw_readl(base+CPTS_INTSTAT_RAW));
++printk("CPTS_INTSTAT_MASKED:%08x\n",__raw_readl(base+CPTS_INTSTAT_MASKED));
++printk("CPTS_INT_ENABLE:%08x\n",__raw_readl(base+CPTS_INT_ENABLE));
++printk("CPTS_EVENT_POP:%08x\n",__raw_readl(base+CPTS_EVENT_POP));
++printk("CPTS_EVENT_LOW:%08x\n",__raw_readl(base+CPTS_EVENT_LOW));
++printk("CPTS_EVENT_HIGH:%08x\n",__raw_readl(base+CPTS_EVENT_HIGH));
++//#define CPSW_ALE      0x4A100D00
++printk("ALE_IDVER:%08x\n",__raw_readl(base+ALE_IDVER));
++printk("ALE_CONTROL:%08x\n",__raw_readl(base+ALE_CONTROL));
++printk("PRESCALE:%08x\n",__raw_readl(base+PRESCALE));
++printk("UNKNOWN_VLAN:%08x\n",__raw_readl(base+UNKNOWN_VLAN));
++printk("TBLCTL:%08x\n",__raw_readl(base+TBLCTL));
++printk("TBLW2:%08x\n",__raw_readl(base+TBLW2));
++printk("TBLW1:%08x\n",__raw_readl(base+TBLW1));
++printk("TBLW0:%08x\n",__raw_readl(base+TBLW0));
++printk("PORTCTL0:%08x\n",__raw_readl(base+PORTCTL0));
++printk("PORTCTL1:%08x\n",__raw_readl(base+PORTCTL1));
++printk("PORTCTL2:%08x\n",__raw_readl(base+PORTCTL2));
++printk("PORTCTL3:%08x\n",__raw_readl(base+PORTCTL3));
++printk("PORTCTL4:%08x\n",__raw_readl(base+PORTCTL4));
++printk("PORTCTL5:%08x\n",__raw_readl(base+PORTCTL5));
++//#define CPSW_SL1      0x4A100D80
++printk("SL1_IDVER:%08x\n",__raw_readl(base+SL1_IDVER));
++printk("SL1_MACCONTROL:%08x\n",__raw_readl(base+SL1_MACCONTROL));
++printk("SL1_MACSTATUS:%08x\n",__raw_readl(base+SL1_MACSTATUS));
++printk("SL1_SOFT_RESET:%08x\n",__raw_readl(base+SL1_SOFT_RESET));
++printk("SL1_RX_MAXLEN:%08x\n",__raw_readl(base+SL1_RX_MAXLEN));
++printk("SL1_BOFFTEST:%08x\n",__raw_readl(base+SL1_BOFFTEST));
++printk("SL1_RX_PAUSE:%08x\n",__raw_readl(base+SL1_RX_PAUSE));
++printk("SL1_TX_PAUSE:%08x\n",__raw_readl(base+SL1_TX_PAUSE));
++printk("SL1_EMCONTROL:%08x\n",__raw_readl(base+SL1_EMCONTROL));
++printk("SL1_RX_PRI_MAP:%08x\n",__raw_readl(base+SL1_RX_PRI_MAP));
++printk("SL1_TX_GAP:%08x\n",__raw_readl(base+SL1_TX_GAP));
++//#define CPSW_SL2      0x4A100DC0
++printk("SL2_IDVER:%08x\n",__raw_readl(base+SL2_IDVER));
++printk("SL2_MACCONTROL:%08x\n",__raw_readl(base+SL2_MACCONTROL));
++printk("SL2_MACSTATUS:%08x\n",__raw_readl(base+SL2_MACSTATUS));
++printk("SL2_SOFT_RESET:%08x\n",__raw_readl(base+SL2_SOFT_RESET));
++printk("SL2_RX_MAXLEN:%08x\n",__raw_readl(base+SL2_RX_MAXLEN));
++printk("SL2_BOFFTEST:%08x\n",__raw_readl(base+SL2_BOFFTEST));
++printk("SL2_RX_PAUSE:%08x\n",__raw_readl(base+SL2_RX_PAUSE));
++printk("SL2_TX_PAUSE:%08x\n",__raw_readl(base+SL2_TX_PAUSE));
++printk("SL2_EMCONTROL:%08x\n",__raw_readl(base+SL2_EMCONTROL));
++printk("SL2_RX_PRI_MAP:%08x\n",__raw_readl(base+SL2_RX_PRI_MAP));
++printk("SL2_TX_GAP:%08x\n",__raw_readl(base+SL2_TX_GAP));
++#else
++//#define CPSW_STATS    0x4A100900
++#if 0
++printk("Good_RX_FRAME:%08x\n",__raw_readl(base+Good_RX_FRAME));
++printk("Broadcast_RX_FRAME:%08x\n",__raw_readl(base+Broadcast_RX_FRAME));
++printk("Multicast_RX_FRAME  :%08x\n",__raw_readl(base+Multicast_RX_FRAME  ));
++printk("Pause_RX_FRAME  :%08x\n",__raw_readl(base+Pause_RX_FRAME  ));
++printk("Rx_CRC_ERR:%08x\n",__raw_readl(base+Rx_CRC_ERR));
++printk("Rx_ALIGN_ERR:%08x\n",__raw_readl(base+Rx_ALIGN_ERR));
++printk("Oversize_RX_FRAME    :%08x\n",__raw_readl(base+Oversize_RX_FRAME    ));
++printk("Rx_JAB:%08x\n",__raw_readl(base+Rx_JAB));
++printk("Undersize_RX_FRAME    :%08x\n",__raw_readl(base+Undersize_RX_FRAME    ));
++printk("Rx_FRAG:%08x\n",__raw_readl(base+Rx_FRAG));
++printk("Rx_OCT:%08x\n",__raw_readl(base+Rx_OCT));
++printk("Good_TX_FRAME:%08x\n",__raw_readl(base+Good_TX_FRAME));
++printk("Broadcast_TX_FRAME  :%08x\n",__raw_readl(base+Broadcast_TX_FRAME  ));
++printk("Multicast_TX_FRAME  :%08x\n",__raw_readl(base+Multicast_TX_FRAME  ));
++printk("Pause_TX_FRAME  :%08x\n",__raw_readl(base+Pause_TX_FRAME  ));
++printk("Deferred_TX_FRAME  :%08x\n",__raw_readl(base+Deferred_TX_FRAME  ));
++printk("Collisions_TX:%08x\n",__raw_readl(base+Collisions_TX));
++printk("Single_TX:%08x\n",__raw_readl(base+Single_TX));
++printk("Multiple_COL_TX:%08x\n",__raw_readl(base+Multiple_COL_TX));
++printk("Excessive_COL:%08x\n",__raw_readl(base+Excessive_COL));
++printk("Late_COL:%08x\n",__raw_readl(base+Late_COL));
++printk("Tx_UNDE:%08x\n",__raw_readl(base+Tx_UNDER));
++printk("Carrier_SEN:%08x\n",__raw_readl(base+Carrier_SEN));
++printk("Tx_COT:%08x\n",__raw_readl(base+Tx_COT));
++printk("Rx_TX_64:%08x\n",__raw_readl(base+Rx_TX_64));
++printk("Rx_TX_128:%08x\n",__raw_readl(base+Rx_TX_128));
++printk("Rx_TX_255:%08x\n",__raw_readl(base+Rx_TX_255));
++printk("Rx_TX_511:%08x\n",__raw_readl(base+Rx_TX_511));
++printk("Rx_TX_512:%08x\n",__raw_readl(base+Rx_TX_512));
++printk("Rx_TX_1024:%08x\n",__raw_readl(base+Rx_TX_1024));
++printk("Net_OCT:%08x\n",__raw_readl(base+Net_OCT));
++printk("Rx_S_FRAM:%08x\n",__raw_readl(base+Rx_S_FRAM));
++printk("Rx_M_FRAM:%08x\n",__raw_readl(base+Rx_M_FRAM));
++printk("Rx_DMA_OVE:%08x\n",__raw_readl(base+Rx_DMA_OVE));
++#endif
++//#DMA regs
++printk("TX_IDVER:%08x\n",__raw_readl(base+TX_IDVER));
++printk("TX_CONTROL:%08x\n",__raw_readl(base+TX_CONTROL));
++printk("TX_TEARDOWN:%08x\n",__raw_readl(base+TX_TEARDOWN));
++printk("RX_IDVER:%08x\n",__raw_readl(base+RX_IDVER));
++printk("RX_CONTROL:%08x\n",__raw_readl(base+RX_CONTROL));
++printk("RX_TEARDOWN:%08x\n",__raw_readl(base+RX_TEARDOWN));
++printk("CPDMA_SOFT_RESET:%08x\n",__raw_readl(base+CPDMA_SOFT_RESET));
++printk("DMACONTROL:%08x\n",__raw_readl(base+DMACONTROL));
++printk("DMASTATUS:%08x\n",__raw_readl(base+DMASTATUS));
++printk("RX_BUFFER_OFFSET:%08x\n",__raw_readl(base+RX_BUFFER_OFFSET));
++printk("EMCONTROL:%08x\n",__raw_readl(base+EMCONTROL));
++printk("TX_PRI0_RATE:%08x\n",__raw_readl(base+TX_PRI0_RATE));
++printk("TX_PRI1_RATE:%08x\n",__raw_readl(base+TX_PRI1_RATE));
++printk("TX_PRI2_RATE:%08x\n",__raw_readl(base+TX_PRI2_RATE));
++printk("TX_PRI3_RATE:%08x\n",__raw_readl(base+TX_PRI3_RATE));
++printk("TX_PRI4_RATE:%08x\n",__raw_readl(base+TX_PRI4_RATE));
++printk("TX_PRI5_RATE:%08x\n",__raw_readl(base+TX_PRI5_RATE));
++printk("TX_PRI6_RATE:%08x\n",__raw_readl(base+TX_PRI6_RATE));
++printk("TX_PRI7_RATE:%08x\n",__raw_readl(base+TX_PRI7_RATE));
++printk("TX_INTSTAT_RAW:%08x\n",__raw_readl(base+TX_INTSTAT_RAW));
++printk("TX_INTSTAT_MASKED:%08x\n",__raw_readl(base+TX_INTSTAT_MASKED));
++printk("TX_INTMASK_SET:%08x\n",__raw_readl(base+TX_INTMASK_SET));
++printk("TX_INTMASK_CLEAR:%08x\n",__raw_readl(base+TX_INTMASK_CLEAR));
++printk("CPDMA_IN_VECTOR:%08x\n",__raw_readl(base+CPDMA_IN_VECTOR));
++printk("CPDMA_EOI_VECTOR:%08x\n",__raw_readl(base+CPDMA_EOI_VECTOR));
++printk("RX_INTSTAT_RAW:%08x\n",__raw_readl(base+RX_INTSTAT_RAW));
++printk("RX_INTSTAT_MASKED:%08x\n",__raw_readl(base+RX_INTSTAT_MASKED));
++printk("RX_INTMASK_SET:%08x\n",__raw_readl(base+RX_INTMASK_SET));
++printk("RX_INTMASK_CLEAR:%08x\n",__raw_readl(base+RX_INTMASK_CLEAR));
++printk("DMA_INTSTAT_RAW:%08x\n",__raw_readl(base+DMA_INTSTAT_RAW));
++printk("DMA_INTSTAT_MASKED:%08x\n",__raw_readl(base+DMA_INTSTAT_MASKED));
++printk("DMA_INTMASK_SET:%08x\n",__raw_readl(base+DMA_INTMASK_SET));
++printk("DMA_INTMASK_CLEAR:%08x\n",__raw_readl(base+DMA_INTMASK_CLEAR));
++printk("RX0_PENDTHRESH:%08x\n",__raw_readl(base+RX0_PENDTHRESH));
++printk("RX0_FRAMBUFFER:%08x\n",__raw_readl(base+CPSW_CPDMA+0xe0));
++#endif
++}
+diff --git a/drivers/net/ethernet/generic_mdio.c b/drivers/net/ethernet/generic_mdio.c
+index a24d4b7..da1c067 100644
+--- a/drivers/net/ethernet/generic_mdio.c
++++ b/drivers/net/ethernet/generic_mdio.c
+@@ -207,7 +207,6 @@ static int generic_mdio_write(struct mii_bus *bus, int phy_id, int phy_reg, u16
+ 
+ 	spin_unlock(&data->lock);
+ 
+-	printk("write phy_id:%08x phy_reg:%08x data:%08x\n", phy_id, phy_reg, phy_data);
+ 	return 0;
+ }
+ 
+diff --git a/drivers/net/ethernet/generic_net.c b/drivers/net/ethernet/generic_net.c
+index 5dfb3e9..967aca1 100644
+--- a/drivers/net/ethernet/generic_net.c
++++ b/drivers/net/ethernet/generic_net.c
+@@ -27,92 +27,6 @@
+ #define PKT_MAX			(1500 + 14 + 4 + 4)
+ 
+ 
+-struct cpsw_wr_regs {
+-    u32 id_ver;
+-    u32 soft_reset;
+-    u32 control;
+-    u32 int_control;
+-    u32 rx_thresh_en;
+-    u32 rx_en;
+-    u32 tx_en;
+-    u32 misc_en;
+-    u32 mem_allign1[8];
+-    u32 rx_thresh_stat;
+-    u32 rx_stat;
+-    u32 tx_stat;
+-    u32 misc_stat;
+-    u32 mem_allign2[8];
+-    u32 rx_imax;
+-    u32 tx_imax;
+-};
+-
+-struct cpsw_ss_regs {
+-    u32 id_ver;
+-    u32 control;
+-    u32 soft_reset;
+-    u32 stat_port_en;
+-    u32 ptype;
+-    u32 soft_idle;
+-    u32 thru_rate;
+-    u32 gap_thresh;
+-    u32 tx_start_wds;
+-    u32 flow_control;
+-    u32 vlan_ltype;
+-    u32 ts_ltype;
+-    u32 dlr_ltype;
+-};
+-
+-struct cpsw_port_regs 
+-{
+-	u32 control;
+-	u32 max_blks;
+-	u32 blk_cnt;
+-	u32 tx_in_ctrl;
+-	u32 port_vlan;
+-	u32 tx_pri_map;
+-	u32 cpdma_tx_pri_map;
+-	u32 cpdma_rx_chan_map;
+-};
+-
+-struct cpsw_port_slave_regs 
+-{
+-	u32 control;
+-	u32 max_blks;
+-	u32 blk_cnt;
+-	u32 tx_in_ctrl;
+-	u32 port_vlan;
+-	u32 tx_pri_map;
+-	u32 seq_mtype;
+-	u32 sa_lo;
+-	u32 sa_hi;
+-};
+-
+-struct cpsw_slive_regs 
+-{
+-	u32 id_ver;
+-	u32 mac_control;
+-	u32 mac_status;
+-	u32 soft_reset;
+-	u32 rx_maxlen;
+-	u32 boff_test;
+-	u32 rx_pause;
+-	u32 tx_pause;
+-	u32 emcontrol;
+-	u32 rx_pri_map;
+-};
+-
+-struct gen_net_data
+-{
+-	void __iomem *base;
+-	struct cpsw_ss_regs __iomem *regs;
+-	struct cpsw_wr_regs __iomem *wr_regs;
+-	struct cpsw_slive_regs __iomem *slive_regs;
+-	struct cpsw_port_regs __iomem  *port_regs;
+-	struct cpsw_ale_regs  __iomem *ale_regs;
+-	u32 ale_entries;
+-
+-	struct phy_device *phydev;
+-};
+ 
+ 
+ #define mac_hi(mac)	(((mac)[0] << 0) | ((mac)[1] << 8) |	\
+@@ -214,7 +128,6 @@ static void gen_cpsw_control_init(struct net_device *ndev)
+ 	cpsw_ale_enable(pdata, 1);
+ 	cpsw_ale_clear(pdata, 1);
+ 	cpsw_ale_vlan_aware(pdata, 0); /* vlan unaware mode */
+-	printk("zz %s %08x\n", __func__, __raw_readl(&pdata->ale_regs->control));
+ 
+ 	/* setup host port priority mapping */
+ 	__raw_writel(0x76543210, &pdata->port_regs->cpdma_tx_pri_map);
+@@ -240,11 +153,10 @@ void gen_phy_adjust_link(struct net_device *ndev)
+ 	struct gen_net_data *pdata = netdev_priv(ndev);
+ 	if (pdata->phydev->link) {
+ 		__raw_writel(0x8021, &pdata->slive_regs->mac_control);
++		gen_test(pdata, pdata->base+CPSW_CPDMA);
+ 		while(1) {
+-			do {
+-				dump_cpsw_regs(pdata->regs);
++				gen_cpsw_rx_poll(pdata);
+ 				msleep(1000);
+-			} while (1);
+ 		}
+ 	}
+ }
+@@ -275,6 +187,7 @@ static int cpsw_ndo_open(struct net_device *ndev)
+ 	gen_cpsw_control_init(ndev);
+ 	/* Bring the PHY up */
+ 	phy_start(pdata->phydev);
++	gen_cppi_init(pdata, 0x4a100000);
+ 
+ 	return 0;
+ }
+@@ -447,6 +360,8 @@ static int generic_net_probe(struct platform_device *pdev)
+ 	g_data->port_regs= g_data->base+CPSW_PORT;
+ 	g_data->slive_regs= g_data->base+CPSW_SL1;
+ 	g_data->ale_entries = MAX_ALE_ENTRY;
++	g_data->ndev = ndev;
++	g_data->pdev = pdev;
+ 
+ 	ret = register_netdev(ndev);
+ 
+diff --git a/drivers/net/ethernet/generic_net.h b/drivers/net/ethernet/generic_net.h
+index 3d94512..9d8f686 100644
+--- a/drivers/net/ethernet/generic_net.h
++++ b/drivers/net/ethernet/generic_net.h
+@@ -9,7 +9,6 @@ struct generic_mdio_data {
+ 	unsigned long	access_time; /* jiffies */
+ };
+ 
+-
+ struct cpsw_ale_regs {
+ 	u32 id_dev;
+ 	u32 reserve1;
+@@ -31,12 +30,104 @@ struct cpsw_ale_regs {
+ 	u32 portctl5;
+ };
+ 
++struct cpsw_wr_regs {
++    u32 id_ver;
++    u32 soft_reset;
++    u32 control;
++    u32 int_control;
++    u32 rx_thresh_en;
++    u32 rx_en;
++    u32 tx_en;
++    u32 misc_en;
++    u32 mem_allign1[8];
++    u32 rx_thresh_stat;
++    u32 rx_stat;
++    u32 tx_stat;
++    u32 misc_stat;
++    u32 mem_allign2[8];
++    u32 rx_imax;
++    u32 tx_imax;
++};
++
++struct cpsw_ss_regs {
++    u32 id_ver;
++    u32 control;
++    u32 soft_reset;
++    u32 stat_port_en;
++    u32 ptype;
++    u32 soft_idle;
++    u32 thru_rate;
++    u32 gap_thresh;
++    u32 tx_start_wds;
++    u32 flow_control;
++    u32 vlan_ltype;
++    u32 ts_ltype;
++    u32 dlr_ltype;
++};
++
++struct cpsw_port_regs 
++{
++	u32 control;
++	u32 max_blks;
++	u32 blk_cnt;
++	u32 tx_in_ctrl;
++	u32 port_vlan;
++	u32 tx_pri_map;
++	u32 cpdma_tx_pri_map;
++	u32 cpdma_rx_chan_map;
++};
++
++struct cpsw_port_slave_regs 
++{
++	u32 control;
++	u32 max_blks;
++	u32 blk_cnt;
++	u32 tx_in_ctrl;
++	u32 port_vlan;
++	u32 tx_pri_map;
++	u32 seq_mtype;
++	u32 sa_lo;
++	u32 sa_hi;
++};
++
++struct cpsw_slive_regs 
++{
++	u32 id_ver;
++	u32 mac_control;
++	u32 mac_status;
++	u32 soft_reset;
++	u32 rx_maxlen;
++	u32 boff_test;
++	u32 rx_pause;
++	u32 tx_pause;
++	u32 emcontrol;
++	u32 rx_pri_map;
++};
++
++struct gen_net_data
++{
++	void __iomem *base;
++	struct cpsw_ss_regs __iomem *regs;
++	struct cpsw_wr_regs __iomem *wr_regs;
++	struct cpsw_slive_regs __iomem *slive_regs;
++	struct cpsw_port_regs __iomem  *port_regs;
++	struct cpsw_ale_regs  __iomem *ale_regs;
++	u32 ale_entries;
++
++	struct platform_device		*pdev;
++	struct net_device		*ndev;
++	struct phy_device *phydev;
++};
++
+ extern struct generic_mdio_data *gen_mdio_data;
+ void dump_cpsw_regs(void __iomem *base);
+ int cpsw_ale_add_mcast(struct cpsw_ale_regs *priv, const u8 *addr,
+ 			      int port_mask);
+ int cpsw_ale_add_ucast(struct cpsw_ale_regs *ale_regs, const u8 *addr,
+ 			      int port, int flags);
++void *gen_test(struct gen_net_data *pdata, void * __iomem dma_regs);
++int gen_cppi_init(struct gen_net_data *pdata, u32 phy_addr);
++void gen_cpsw_rx_poll(struct gen_net_data *pdata);
+ 
+ #define CPSW_BASE 	  0x4A100000
+ #define CPSW_SIZE 	  0x3000
+diff --git a/drivers/net/ethernet/generic_transfer.c b/drivers/net/ethernet/generic_transfer.c
+new file mode 100644
+index 0000000..4a077d1
+--- /dev/null
++++ b/drivers/net/ethernet/generic_transfer.c
+@@ -0,0 +1,298 @@
++#include <linux/kernel.h>
++#include <linux/io.h>
++#include <linux/clk.h>
++#include <linux/timer.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/irqreturn.h>
++#include <linux/interrupt.h>
++#include <linux/if_ether.h>
++#include <linux/etherdevice.h>
++#include <linux/netdevice.h>
++#include <linux/net_tstamp.h>
++#include <linux/phy.h>
++#include <linux/workqueue.h>
++#include <linux/delay.h>
++#include <linux/pm_runtime.h>
++#include <linux/of.h>
++#include <linux/of_net.h>
++#include <linux/of_device.h>
++#include <linux/if_vlan.h>
++#include <linux/net_switch_config.h>
++#include <linux/pinctrl/consumer.h>
++
++#include "generic_net.h"
++
++/* DMA Registers */
++#define CPDMA_TXCONTROL		0x004
++#define CPDMA_RXCONTROL		0x014
++#define CPDMA_SOFTRESET		0x01c
++#define CPDMA_RXFREE		0x0e0
++#define CPDMA_TXHDP_VER1	0x100
++#define CPDMA_TXHDP_VER2	0x200
++#define CPDMA_RXHDP_VER1	0x120
++#define CPDMA_RXHDP_VER2	0x220
++#define CPDMA_TXCP_VER1		0x140
++#define CPDMA_TXCP_VER2		0x240
++#define CPDMA_RXCP_VER1		0x160
++#define CPDMA_RXCP_VER2		0x260
++
++/* Descriptor mode bits */
++#define CPDMA_DESC_SOP		BIT(31)
++#define CPDMA_DESC_EOP		BIT(30)
++#define CPDMA_DESC_OWNER	BIT(29)
++#define CPDMA_DESC_EOQ		BIT(28)
++
++#define MAX_RX_CNT (8)
++#define MAX_TX_CNT (8)
++
++#define MAX_TRAN_POOL_NUMBER (16)
++#define MAX_TRAN_RAM_SIZE (0x2000)
++#define DMA_REGS_OFF (0x800)
++#define RAM_REGS_OFF (0x2000)
++#define RAM_REGS_SIZE (0x2000)
++
++struct gen_cpsw_cppi_des {
++	/* hardware fields */
++	u32			hw_next;
++	u32			hw_buffer;
++	u32			hw_len;
++	u32			hw_mode;
++	/* software fields */
++	u32			sw_buffer;
++	u32			sw_len;
++};
++
++struct gen_tran_pool {
++	void * __iomem  cpsw_addr;
++	void * __iomem  base;
++	void *start_addr;
++	unsigned long *bitmap;
++
++	struct platform_device		*pdev;
++	struct net_device		*ndev;
++
++	u32 num_desc;
++};
++
++struct gen_cppi_data {
++	struct list_head *rx_list;	
++	struct list_head *tx_list;	
++};
++
++static struct gen_cppi_data * gen_cppi_d;
++
++struct gen_tran_pool * g_tran_pool;
++void gen_cpsw_fill_desc(struct gen_tran_pool *pool, struct gen_cpsw_cppi_des *chan_desc, void *buffer, int len, dma_addr_t dma_buf);
++struct gen_cpsw_cppi_des *gen_cpsw_pool_alloc(struct gen_tran_pool *pool, int size);
++#if 0
++static int cpdma_submit(struct cpsw_priv *priv, struct cpdma_chan *chan,
++			void *buffer, int len)
++{
++	struct cpdma_desc *desc, *prev;
++	u32 mode;
++
++	desc = cpdma_desc_alloc(priv);
++	if (!desc)
++		return -ENOMEM;
++
++	if (len < PKT_MIN)
++		len = PKT_MIN;
++
++	mode = CPDMA_DESC_OWNER | CPDMA_DESC_SOP | CPDMA_DESC_EOP;
++
++	desc_write(desc, hw_next,   0);
++	desc_write(desc, hw_buffer, buffer);
++	desc_write(desc, hw_len,    len);
++	desc_write(desc, hw_mode,   mode | len);
++	desc_write(desc, sw_buffer, buffer);
++	desc_write(desc, sw_len,    len);
++
++	if (!chan->head) {
++		/* simple case - first packet enqueued */
++		chan->head = desc;
++		chan->tail = desc;
++		chan_write(chan, hdp, desc);
++		goto done;
++	}
++
++	/* not the first packet - enqueue at the tail */
++	prev = chan->tail;
++	desc_write(prev, hw_next, desc);
++	chan->tail = desc;
++
++	/* next check if EOQ has been triggered already */
++	if (desc_read(prev, hw_mode) & CPDMA_DESC_EOQ)
++		chan_write(chan, hdp, desc);
++
++done:
++	if (chan->rxfree)
++		chan_write(chan, rxfree, 1);
++	return 0;
++}
++#endif
++
++#define CLEAR_BIT 1
++/* Set a self-clearing bit in a register, and wait for it to clear */
++static inline void setbit_and_wait_for_clear32(void *addr)
++{
++	__raw_writel(CLEAR_BIT, addr);
++	while (__raw_readl(addr) & CLEAR_BIT)
++		;
++}
++
++void gen_dma_control_init(void * __iomem dma_regs)
++{
++	u32 i;
++	/* clear dma state */
++	setbit_and_wait_for_clear32(dma_regs + CPDMA_SOFTRESET);
++
++	for (i = 0; i < 8; i++) {
++		__raw_writel(0, dma_regs + CPDMA_RXHDP_VER2 + 4*i);
++		__raw_writel(0, dma_regs + CPDMA_RXFREE + 4*i);
++		__raw_writel(0, dma_regs + CPDMA_RXCP_VER2 + 4*i);
++		__raw_writel(0, dma_regs + CPDMA_TXHDP_VER2 + 4*i);
++		__raw_writel(0, dma_regs + CPDMA_TXCP_VER2 + 4*i);
++	}
++
++    	__raw_writel(1, dma_regs + CPDMA_TXCONTROL);
++	__raw_writel(1, dma_regs + CPDMA_RXCONTROL);
++}
++
++static struct gen_cpsw_cppi_des *g_desc_chan;
++void *gen_test(struct gen_net_data *pdata, void * __iomem dma_regs)
++{
++	void *buf;
++	dma_addr_t dma_buf;
++	struct gen_cpsw_cppi_des *desc_chan;
++	u32 len, ret;
++
++	len = 512;
++	buf = kzalloc(1024*4, GFP_KERNEL);
++	desc_chan = gen_cpsw_pool_alloc(g_tran_pool, 0);
++	if (!desc_chan) {
++		printk("alloc chan desc failed\n");
++		goto fail1;
++	} else {
++		printk("alloc desc_chan:%08x buf:%08x\n", (u32)desc_chan, (u32)buf);
++	}
++
++	dma_buf= dma_map_single(&pdata->pdev->dev, buf, len, DMA_FROM_DEVICE);
++	ret = dma_mapping_error(&pdata->pdev->dev, dma_buf);
++	if (ret) {
++		printk("zz %s dma map failed\n", __func__);
++	} else {
++		printk("dma map:%08x\n", dma_buf);
++	}
++
++	gen_cpsw_fill_desc(g_tran_pool, desc_chan, buf, 512, dma_buf);
++
++	__raw_writel((u32)g_tran_pool->base, dma_regs+CPDMA_RXHDP_VER2);
++	//__raw_writel(0x1000,  dma_regs+CPDMA_RXHDP_VER2);
++	g_desc_chan=desc_chan;
++	return buf;
++
++fail1:
++	return NULL;
++}
++
++void gen_cppi_dump(struct gen_net_data *pdata)
++{
++	struct gen_cpsw_cppi_des *desc_chan;
++
++	desc_chan = g_tran_pool->start_addr;
++	printk("dump chan desc: hw_buf:%08x hw_len:%08x, hw_mode:%08x, nex:%08x, sw:%08x sw_l:%08x\n", __func__,
++			desc_chan->hw_buffer,
++			desc_chan->hw_len
++			,desc_chan->hw_mode
++			,desc_chan->hw_next
++			,desc_chan->sw_buffer
++			,desc_chan->sw_len);
++
++}
++
++void gen_cpsw_rx_poll(struct gen_net_data *pdata)
++{
++	u32 mode, i;
++	u32 *buffer;
++	dma_addr_t dma_buf;
++	struct gen_cpsw_cppi_des *desc_chan;
++
++	desc_chan = g_tran_pool->start_addr;
++	//mode = __raw_readl(&desc_chan->hw_mode);	
++	mode = desc_chan->hw_mode;
++	dma_buf = __raw_readl(&desc_chan->hw_buffer);	
++	buffer = (u32 *)__raw_readl(&desc_chan->sw_buffer);	
++
++	while (1) {
++		if (!(mode & CPDMA_DESC_OWNER)) {
++			dma_unmap_single(&pdata->pdev->dev, dma_buf, 512, DMA_FROM_DEVICE);
++			for (i = 0; i < 16; ++i) {
++				printk("%08x ",buffer[i]);
++				
++			}
++			printk("\n");
++		} else {
++			printk("zz %s poll not complete:%08x\n", __func__, mode);
++			//dump_cpsw_regs(pdata->regs);
++			gen_cppi_dump(pdata);
++		}
++		msleep(1000);
++	}
++}
++
++void gen_cpsw_fill_desc(struct gen_tran_pool *pool, struct gen_cpsw_cppi_des *chan_desc, void *buffer, int len, dma_addr_t dma_buf)
++{
++	__raw_writel((u32)buffer, &chan_desc->sw_buffer);
++	__raw_writel(len, &chan_desc->sw_len);
++
++	__raw_writel((u32)dma_buf, &chan_desc->hw_buffer);
++	__raw_writel(len, &chan_desc->hw_len);
++	__raw_writel(0, &chan_desc->hw_next);
++	__raw_writel(CPDMA_DESC_OWNER | CPDMA_DESC_SOP | CPDMA_DESC_EOP | 512, &chan_desc->hw_mode);
++
++	printk("fill chan desc: hw_buf:%08x hw_len:%08x, hw_mode:%08x, nex:%08x, sw:%08x sw_l:%08x\n", __func__,
++			chan_desc->hw_buffer,
++			chan_desc->hw_len
++			,chan_desc->hw_mode
++			,chan_desc->hw_next
++			,chan_desc->sw_buffer
++			,chan_desc->sw_len);
++}
++
++struct gen_cpsw_cppi_des *gen_cpsw_pool_alloc(struct gen_tran_pool *pool, int size)
++{
++	u32 index, desc_end, desc_start;
++
++	desc_start = 0;
++	desc_end = pool->num_desc;
++	index = bitmap_find_next_zero_area(pool->bitmap,
++				desc_end, desc_start, pool->num_desc, 0);
++
++	bitmap_fill(pool->bitmap, index);
++	return pool->start_addr+index*sizeof(struct gen_cpsw_cppi_des);
++}
++
++void gen_cpsw_crtl_pool_init(struct gen_net_data *pdata, u32 phy)
++{
++	struct gen_tran_pool *pool;
++
++	pool = kmalloc(sizeof(struct gen_tran_pool), GFP_KERNEL);
++	pool->base = (void*)phy + RAM_REGS_OFF;
++	pool->cpsw_addr = pdata->base;
++	pool->start_addr = pdata->base+ RAM_REGS_SIZE;
++	pool->bitmap = kzalloc(MAX_TRAN_RAM_SIZE, GFP_KERNEL);
++	pool->num_desc = MAX_TRAN_RAM_SIZE;
++	
++	pool->pdev = pdata->pdev;
++	pool->ndev = pdata->ndev;
++
++	g_tran_pool = pool;
++}
++
++int gen_cppi_init(struct gen_net_data *pdata, u32 phy_addr)
++{
++	gen_cpsw_crtl_pool_init(pdata, phy_addr);
++	gen_dma_control_init(pdata->base+DMA_REGS_OFF);
++	return 0;
++}
+-- 
+1.9.1
+

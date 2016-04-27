@@ -1,0 +1,67 @@
+From 07de2bccd4a750c693bdb84e67b471a688175990 Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Fri, 26 Feb 2016 10:43:22 +0800
+Subject: [PATCH 04/14] generic: test interrupt is ok by using SW triger
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ arch/arm/mach-generic/interrupt.c | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/arch/arm/mach-generic/interrupt.c b/arch/arm/mach-generic/interrupt.c
+index 438035d9..a439e37 100644
+--- a/arch/arm/mach-generic/interrupt.c
++++ b/arch/arm/mach-generic/interrupt.c
+@@ -25,6 +25,7 @@
+ #define INTC_MIR0		0x0084
+ #define INTC_MIR_CLEAR0		0x0088
+ #define INTC_MIR_SET0		0x008c
++#define INTC_ISR_SET0       0x0090
+ #define INTC_PENDING_IRQ0	0x0098
+ 
+ /* Number of IRQ state bits in each MIR register */
+@@ -40,6 +41,7 @@ static struct gen_irq_bank {
+ };
+ static struct irq_domain *domain;
+ 
++
+ static void intc_bank_write_reg(u32 val, struct gen_irq_bank *bank, u16 reg)
+ {
+ 	__raw_writel(val, bank->base_reg + reg);
+@@ -50,6 +52,22 @@ static u32 intc_bank_read_reg(struct gen_irq_bank *bank, u16 reg)
+ 	return __raw_readl(bank->base_reg + reg);
+ }
+ 
++static void irq_dump(struct gen_irq_bank *bank)
++{
++	early_print("INTC_REVISION	:%08x\n", intc_bank_read_reg(bank,INTC_REVISION));
++	early_print("INTC_SYSCONFIG	:%08x\n", intc_bank_read_reg(bank,INTC_SYSCONFIG));		
++	early_print("INTC_SYSSTATUS	:%08x\n", intc_bank_read_reg(bank,INTC_SYSSTATUS));		
++	early_print("INTC_SIR	:%08x\n", intc_bank_read_reg(bank,INTC_SIR));
++	early_print("INTC_CONTROL	:%08x\n", intc_bank_read_reg(bank,INTC_CONTROL));
++	early_print("INTC_PROTECTION	:%08x\n", intc_bank_read_reg(bank,INTC_PROTECTION));
++	early_print("INTC_IDLE	:%08x\n", intc_bank_read_reg(bank,INTC_IDLE));
++	early_print("INTC_THRESHOLD	:%08x\n", intc_bank_read_reg(bank,INTC_THRESHOLD));
++	early_print("INTC_MIR0:%08x\n", intc_bank_read_reg(bank,INTC_MIR0));
++	early_print("INTC_MIR_CLEAR:%08x\n", intc_bank_read_reg(bank,INTC_MIR_CLEAR0));
++	early_print("INTC_MIR_SET:%08x\n", intc_bank_read_reg(bank,INTC_MIR_SET0));
++	early_print("INTC_PENDING_IRQ:%08x\n", intc_bank_read_reg(bank,INTC_PENDING_IRQ0));
++}
++
+ static void omap_ack_irq(struct irq_data *d)
+ {
+ 	intc_bank_write_reg(0x1, &irq_banks[0], INTC_CONTROL);
+@@ -119,4 +137,10 @@ void __init omap_init_irq(u32 base, int nr_irqs)
+ 	for (j = 0; j < bank->nr_irqs; j += 32)
+ 		gen_alloc_gc(bank->base_reg + j, j + irq_base, 32);
+ 	early_print("allocate IRQ numbers:%d\n", bank->nr_irqs);
++#if 0
++	intc_bank_write_reg(0xfffffff, bank, INTC_MIR_CLEAR0);
++	intc_bank_write_reg(0xfffffff, bank, INTC_ISR_SET0);
++	irq_dump(bank);
++#endif
+ }
++
+-- 
+1.9.1
+

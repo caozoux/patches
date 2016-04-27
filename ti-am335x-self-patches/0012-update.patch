@@ -1,0 +1,371 @@
+From 9d7222349c600aeca04a19bd0406448ce66355fd Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Wed, 13 Apr 2016 09:22:12 +0800
+Subject: [PATCH 12/14] update
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ drivers/net/ethernet/Makefile      |   1 +
+ drivers/net/ethernet/generic_net.c |  73 ++++++++++++-
+ drivers/net/ethernet/generic_net.h | 206 +++++++++++++++++++++++++++++++++++++
+ 3 files changed, 276 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/net/ethernet/Makefile b/drivers/net/ethernet/Makefile
+index c489bd4..6b10ecf4 100644
+--- a/drivers/net/ethernet/Makefile
++++ b/drivers/net/ethernet/Makefile
+@@ -81,3 +81,4 @@ obj-$(CONFIG_NET_VENDOR_XIRCOM) += xircom/
+ #obj-$(CONFIG_NET_VENDOR_GENERIC_MDIO) 	+= generic_mdio.o
+ obj-y 							+= generic_mdio.o
+ obj-y 							+= generic_net.o
++obj-y                           += generic_dbg.o
+diff --git a/drivers/net/ethernet/generic_net.c b/drivers/net/ethernet/generic_net.c
+index 40bc161..8680fdf 100644
+--- a/drivers/net/ethernet/generic_net.c
++++ b/drivers/net/ethernet/generic_net.c
+@@ -22,21 +22,71 @@
+ #include <linux/pinctrl/consumer.h>
+ 
+ #include "generic_net.h"
++struct cpsw_wr_regs {
++    u32 id_ver;
++    u32 soft_reset;
++    u32 control;
++    u32 int_control;
++    u32 rx_thresh_en;
++    u32 rx_en;
++    u32 tx_en;
++    u32 misc_en;
++    u32 mem_allign1[8];
++    u32 rx_thresh_stat;
++    u32 rx_stat;
++    u32 tx_stat;
++    u32 misc_stat;
++    u32 mem_allign2[8];
++    u32 rx_imax;
++    u32 tx_imax;
++};
+ 
+-struct gen_net_data {
+-	struct phy_device *phydev;
++struct cpsw_ss_regs {
++    u32 id_ver;
++    u32 control;
++    u32 soft_reset;
++    u32 stat_port_en;
++    u32 ptype;
++    u32 soft_idle;
++    u32 thru_rate;
++    u32 gap_thresh;
++    u32 tx_start_wds;
++    u32 flow_control;
++    u32 vlan_ltype;
++    u32 ts_ltype;
++    u32 dlr_ltype;
+ };
+ 
++
+ static void gen_phy_adjust_link(struct net_device *dev)
+ {
+ 	printk("zz %s \n", __func__);
+ }
+ 
++static int gen_cpsw_reset(void __iomem *reg)
++{
++    unsigned long timeout = jiffies + HZ;
++    __raw_writel(1, reg);
++    do {
++        cpu_relax();
++    } while ((__raw_readl(reg) & 1) && time_after(timeout, jiffies));
++
++    //WARN(__raw_readl(reg) & 1, "failed to soft-reset %s\n");
++    if (__raw_readl(reg) & 1)
++		printk("zz %s failed to reset soft\n", __func__);
++	else
++		printk("zz %s successfully reset soft\n", __func__);
++
++	return 0;
++
++}
+ static int cpsw_ndo_open(struct net_device *ndev)
+ {
++	struct gen_net_data *pdata = netdev_priv(ndev);
+ 	struct phy_device *phydev = NULL;
+ 	int ret;
+ 
++	printk("zz %s \n", __func__);
+ 	/* find the first phy */
+ 	phydev = phy_find_first(gen_mdio_data->bus);
+ 	if (!phydev) {
+@@ -52,7 +102,11 @@ static int cpsw_ndo_open(struct net_device *ndev)
+ 		return ret;
+ 	}
+ 
+-	pdata->phy_dev = phydev;
++	pdata->phydev = phydev;
++	/* Bring the PHY up */
++	phy_start(pdata->phydev);
++
++	gen_cpsw_reset(pdata->regs);
+ 	return 0;
+ }
+ 
+@@ -66,7 +120,7 @@ static int cpsw_ndo_start_xmit (struct sk_buff *skb,
+ 						   struct net_device *dev)
+ {
+ 	printk("zz %s \n", __func__);
+-	return 0;
++	return NETDEV_TX_OK;
+ }
+ 
+ static int generic_ndo_set_mac_address(struct net_device *ndev,
+@@ -191,6 +245,7 @@ const struct ethtool_ops generic_netdev_tool = {
+ static int generic_net_probe(struct platform_device *pdev)
+ {
+ 	struct net_device		*ndev;
++	struct gen_net_data *g_data;
+ 	int ret;
+ 
+ 	ndev = alloc_etherdev(sizeof(struct net_device));
+@@ -199,6 +254,7 @@ static int generic_net_probe(struct platform_device *pdev)
+ 		return -ENOMEM;
+ 	}
+ 
++	g_data = netdev_priv(ndev);
+ 	ndev->netdev_ops = &cpsw_netdev_ops;
+ 	//netif_napi_add(ndev, &priv->napi, cpsw_poll, CPSW_POLL_WEIGHT);
+ 	//netif_napi_add(ndev, &priv->napi_tx, cpsw_tx_poll, CPSW_POLL_WEIGHT);
+@@ -207,6 +263,15 @@ static int generic_net_probe(struct platform_device *pdev)
+ 	ndev->ethtool_ops = &generic_netdev_tool;
+ 	eth_hw_addr_random(ndev);
+ 
++	g_data->base = ioremap(CPSW_BASE, CPSW_SIZE);
++	if (!g_data->base) {
++		dev_err(&pdev->dev, "map device resource failed\n");
++		return -EIO;
++	}
++	g_data->wr_regs = g_data->base+CPSW_WR;
++	g_data->regs = g_data->base+CPSW_SS;
++	//dump_cpsw_regs(g_data->base);
++
+ 	ret = register_netdev(ndev);
+ 
+ 	if (ret) {
+diff --git a/drivers/net/ethernet/generic_net.h b/drivers/net/ethernet/generic_net.h
+index ad788dc..fadbb80 100644
+--- a/drivers/net/ethernet/generic_net.h
++++ b/drivers/net/ethernet/generic_net.h
+@@ -10,4 +10,210 @@ struct generic_mdio_data {
+ };
+ 
+ extern struct generic_mdio_data *gen_mdio_data;
++void dump_cpsw_regs(void __iomem *base);
++
++#define CPSW_BASE 	  0x4A100000
++#define CPSW_SIZE 	  0x3000
++
++#define CPSW_SS 	  0x000000
++#define CPSW_PORT     0x000100
++#define CPSW_CPDMA    0x000800
++#define CPSW_STATS    0x000900
++#define CPSW_STATERAM 0x000A00
++#define CPSW_CPTS     0x000C00
++#define CPSW_ALE      0x000D00
++#define CPSW_SL1      0x000D80
++#define CPSW_SL2      0x000DC0
++#define MDIO          0x001000
++#define CPSW_WR       0x001200
++#define CPPI_RAM      0x002000
++
++//#define CPSW_SS 	  0x4A100000
++#define  D_VER  0x0+CPSW_SS
++#define  CONTROL  0x4+CPSW_SS 
++#define  SOFT_RESET  0x8+CPSW_SS 
++#define  STAT_PORT_EN  0xC+CPSW_SS 
++#define  PTYPE  0x10+CPSW_SS 
++#define  SOFT_IDLE  0x14+CPSW_SS 
++#define  THRU_RATE  0x18+CPSW_SS 
++#define  GAP_THRESH  0x1C+CPSW_SS 
++#define  TX_START_WDS  0x20+CPSW_SS 
++#define  FLOW_CONTROL  0x24+CPSW_SS 
++#define  VLAN_LTYPE  0x28+CPSW_SS 
++#define  TS_LTYPE  0x2C+CPSW_SS 
++#define  DLR_LTYPE  0x30+CPSW_SS 
++//#define CPSW_PORT     0x4A100100
++#define  P0_CONTROL  0x0+CPSW_PORT 
++#define  P0_MAX_BLKS  0x8+CPSW_PORT  
++#define  P0_BLK_CNT  0xC+CPSW_PORT  
++#define  P0_TX_IN_CTL  0x10+CPSW_PORT  
++#define  P0_PORT_VLAN  0x14+CPSW_PORT  
++#define  P0_TX_PRI_MAP  0x18+CPSW_PORT  
++#define  P0_CPDMA_TX_PRI_MAP  0x1C+CPSW_PORT  
++#define  P0_CPDMA_RX_CH_MAP  0x20+CPSW_PORT  
++#define  P0_RX_DSCP_PRI_MAP0  0x30+CPSW_PORT  
++#define  P0_RX_DSCP_PRI_MAP1  0x34+CPSW_PORT  
++#define  P0_RX_DSCP_PRI_MAP2  0x38+CPSW_PORT  
++#define  P0_RX_DSCP_PRI_MAP3  0x3C+CPSW_PORT  
++#define  P0_RX_DSCP_PRI_MAP4  0x40+CPSW_PORT  
++#define  P0_RX_DSCP_PRI_MAP5  0x44+CPSW_PORT  
++#define  P0_RX_DSCP_PRI_MAP6  0x48+CPSW_PORT  
++#define  P0_RX_DSCP_PRI_MAP7  0x4C+CPSW_PORT  
++#define  P1_CONTROL  0x100+CPSW_PORT  
++#define  P1_MAX_BLKS  0x108+CPSW_PORT  
++#define  P1_BLK_CNT  0x10C+CPSW_PORT  
++#define  P1_TX_IN_CTL  0x110+CPSW_PORT  
++//#define CPSW_CPDMA    0x4A100800
++#define  TX_IDVER  0x0+CPSW_CPDMA 
++#define  TX_CONTROL  0x4+CPSW_CPDMA  
++#define  TX_TEARDOWN  0x8+CPSW_CPDMA  
++#define  RX_IDVER  0x10+CPSW_CPDMA  
++#define  RX_CONTROL  0x14+CPSW_CPDMA  
++#define  RX_TEARDOWN  0x18+CPSW_CPDMA  
++#define  CPDMA_SOFT_RESET  0x1C+CPSW_CPDMA  
++#define  DMACONTROL  0x20+CPSW_CPDMA  
++#define  DMASTATUS  0x24+CPSW_CPDMA  
++#define  RX_BUFFER_OFFSET  0x28+CPSW_CPDMA  
++#define  EMCONTROL  0x2C+CPSW_CPDMA  
++#define  TX_PRI0_RATE  0x30+CPSW_CPDMA  
++#define  TX_PRI1_RATE  0x34+CPSW_CPDMA  
++#define  TX_PRI2_RATE  0x38+CPSW_CPDMA  
++#define  TX_PRI3_RATE  0x3C+CPSW_CPDMA  
++#define  TX_PRI4_RATE  0x40+CPSW_CPDMA  
++#define  TX_PRI5_RATE  0x44+CPSW_CPDMA  
++#define  TX_PRI6_RATE  0x48+CPSW_CPDMA  
++#define  TX_PRI7_RATE  0x4C+CPSW_CPDMA  
++#define  TX_INTSTAT_RAW  0x80+CPSW_CPDMA  
++#define  TX_INTSTAT_MASKED  0x84+CPSW_CPDMA  
++#define  TX_INTMASK_SET  0x88+CPSW_CPDMA  
++#define  TX_INTMASK_CLEAR  0x8C+CPSW_CPDMA  
++#define  CPDMA_IN_VECTOR  0x90+CPSW_CPDMA  
++#define  CPDMA_EOI_VECTOR  0x94+CPSW_CPDMA  
++#define  RX_INTSTAT_RAW  0xA0+CPSW_CPDMA  
++#define  RX_INTSTAT_MASKED  0xA4+CPSW_CPDMA  
++#define  RX_INTMASK_SET  0xA8+CPSW_CPDMA  
++#define  RX_INTMASK_CLEAR  0xAC+CPSW_CPDMA  
++#define  DMA_INTSTAT_RAW  0xB0+CPSW_CPDMA  
++#define  DMA_INTSTAT_MASKED  0xB4+CPSW_CPDMA  
++#define  DMA_INTMASK_SET  0xB8+CPSW_CPDMA  
++#define  DMA_INTMASK_CLEAR  0xBC+CPSW_CPDMA  
++#define  RX0_PENDTHRESH  0xC0+CPSW_CPDMA  
++//#define CPSW_STATS    0x4A100900
++#define  Good_RX_FRAME  0x00+CPSW_STATS 
++#define  Broadcast_RX_FRAME  0x04+CPSW_STATS  
++#define  Multicast_RX_FRAME    0x08+CPSW_STATS  
++#define  Pause_RX_FRAME    0x0C+CPSW_STATS  
++#define  Rx_CRC_ERR  0x10+CPSW_STATS  
++#define  Rx_ALIGN_ERR  0x14+CPSW_STATS  
++#define  Oversize_RX_FRAME      0x18+CPSW_STATS  
++#define  Rx_JAB  0x1C+CPSW_STATS  
++#define  Undersize_RX_FRAME      0x20+CPSW_STATS  
++#define  Rx_FRAG  0x24+CPSW_STATS  
++#define  Rx_OCT  0x30+CPSW_STATS  
++#define  Good_TX_FRAME  0x34+CPSW_STATS  
++#define  Broadcast_TX_FRAME    0x38+CPSW_STATS  
++#define  Multicast_TX_FRAME    0x3C+CPSW_STATS  
++#define  Pause_TX_FRAME    0x40+CPSW_STATS  
++#define  Deferred_TX_FRAME    0x44+CPSW_STATS  
++#define  Collisions_TX  0x48+CPSW_STATS  
++#define  Single_TX  0x4C+CPSW_STATS  
++#define  Multiple_COL_TX  0x50+CPSW_STATS  
++#define  Excessive_COL  0x54+CPSW_STATS  
++#define  Late_COL  0x58+CPSW_STATS  
++#define  Tx_UNDER 0x5C+CPSW_STATS  
++#define  Carrier_SEN  0x60+CPSW_STATS  
++#define  Tx_COT  0x64+CPSW_STATS  
++#define  Rx_TX_64  0x68+CPSW_STATS  
++#define  Rx_TX_128  0x6C+CPSW_STATS  
++#define  Rx_TX_255  0x70+CPSW_STATS  
++#define  Rx_TX_511  0x74+CPSW_STATS  
++#define  Rx_TX_512  0x78+CPSW_STATS  
++#define  Rx_TX_1024  0x7C+CPSW_STATS  
++#define  Net_OCT  0x80+CPSW_STATS  
++#define  Rx_S_FRAM  0x84+CPSW_STATS  
++#define  Rx_M_FRAM  0x88+CPSW_STATS  
++#define  Rx_DMA_OVE  0x8C+CPSW_STATS  
++//#define CPSW_STATERAM 0x4A100A00
++#define  TX0_HDP  0x00+CPSW_STATERAM 
++#define  TX1_HDP  0x04+CPSW_STATERAM  
++#define  TX2_HDP  0x08+CPSW_STATERAM  
++#define  TX3_HDP  0x0C+CPSW_STATERAM  
++#define  TX4_HDP  0x10+CPSW_STATERAM  
++#define  TX5_HDP  0x14+CPSW_STATERAM  
++#define  TX6_HDP  0x18+CPSW_STATERAM  
++#define  TX7_HDP  0x1C+CPSW_STATERAM  
++#define  RX0_HDP  0x20+CPSW_STATERAM  
++#define  RX1_HDP  0x24+CPSW_STATERAM  
++#define  RX2_HDP  0x28+CPSW_STATERAM  
++#define  RX3_HDP  0x2C+CPSW_STATERAM  
++#define  RX4_HDP  0x30+CPSW_STATERAM  
++#define  RX5_HDP  0x34+CPSW_STATERAM  
++#define  RX6_HDP  0x38+CPSW_STATERAM  
++#define  RX7_HDP  0x3C+CPSW_STATERAM  
++#define  TX0_CP  0x40+CPSW_STATERAM  
++#define  TX1_CP  0x44+CPSW_STATERAM  
++#define  TX2_CP  0x48+CPSW_STATERAM  
++#define  TX3_CP  0x4C+CPSW_STATERAM  
++#define  TX4_CP  0x50+CPSW_STATERAM  
++#define  TX5_CP  0x54+CPSW_STATERAM  
++#define  TX6_CP  0x58+CPSW_STATERAM  
++#define  TX7_CP  0x5C+CPSW_STATERAM  
++#define  RX0_CP  0x60+CPSW_STATERAM  
++#define  RX1_CP  0x64+CPSW_STATERAM  
++#define  RX2_CP  0x68+CPSW_STATERAM  
++#define  RX3_CP  0x6C+CPSW_STATERAM  
++//#define CPSW_CPTS     0x4A100C00
++#define  CPTS_IDVER  0x0+CPSW_CPTS 
++#define  CPTS_CONTROL  0x4+CPSW_CPTS  
++#define  CPTS_TS_PUSH  0xC+CPSW_CPTS  
++#define  CPTS_TS_LOAD_VAL  0x10+CPSW_CPTS  
++#define  CPTS_TS_LOAD_EN  0x14+CPSW_CPTS  
++#define  CPTS_INTSTAT_RAW  0x20+CPSW_CPTS  
++#define  CPTS_INTSTAT_MASKED  0x24+CPSW_CPTS  
++#define  CPTS_INT_ENABLE  0x28+CPSW_CPTS  
++#define  CPTS_EVENT_POP  0x30+CPSW_CPTS  
++#define  CPTS_EVENT_LOW  0x34+CPSW_CPTS  
++#define  CPTS_EVENT_HIGH  0x38+CPSW_CPTS  
++//#define CPSW_ALE      0x4A100D00
++#define  ALE_IDVER  0x0+CPSW_ALE 
++#define  ALE_CONTROL  0x8+CPSW_ALE  
++#define  PRESCALE  0x10+CPSW_ALE  
++#define  UNKNOWN_VLAN  0x18+CPSW_ALE  
++#define  TBLCTL  0x20+CPSW_ALE  
++#define  TBLW2  0x34+CPSW_ALE  
++#define  TBLW1  0x38+CPSW_ALE  
++#define  TBLW0  0x3C+CPSW_ALE  
++#define  PORTCTL0  0x40+CPSW_ALE  
++#define  PORTCTL1  0x44+CPSW_ALE  
++#define  PORTCTL2  0x48+CPSW_ALE  
++#define  PORTCTL3  0x4C+CPSW_ALE  
++#define  PORTCTL4  0x50+CPSW_ALE  
++#define  PORTCTL5  0x54+CPSW_ALE  
++//#define CPSW_SL1      0x4A100D80
++#define  SL1_IDVER  0x0+CPSW_SL1 
++#define  SL1_MACCONTROL  0x4+CPSW_SL1  
++#define  SL1_MACSTATUS  0x8+CPSW_SL1  
++#define  SL1_SOFT_RESET  0xC+CPSW_SL1  
++#define  SL1_RX_MAXLEN  0x10+CPSW_SL1  
++#define  SL1_BOFFTEST  0x14+CPSW_SL1  
++#define  SL1_RX_PAUSE  0x18+CPSW_SL1  
++#define  SL1_TX_PAUSE  0x1C+CPSW_SL1  
++#define  SL1_EMCONTROL  0x20+CPSW_SL1  
++#define  SL1_RX_PRI_MAP  0x24+CPSW_SL1  
++#define  SL1_TX_GAP  0x28+CPSW_SL1  
++//#define CPSW_SL2      0x4A100DC0
++#define  SL2_IDVER  0x0+CPSW_SL2 
++#define  SL2_MACCONTROL  0x4+CPSW_SL2  
++#define  SL2_MACSTATUS  0x8+CPSW_SL2  
++#define  SL2_SOFT_RESET  0xC+CPSW_SL2  
++#define  SL2_RX_MAXLEN  0x10+CPSW_SL2  
++#define  SL2_BOFFTEST  0x14+CPSW_SL2  
++#define  SL2_RX_PAUSE  0x18+CPSW_SL2  
++#define  SL2_TX_PAUSE  0x1C+CPSW_SL2  
++#define  SL2_EMCONTROL  0x20+CPSW_SL2  
++#define  SL2_RX_PRI_MAP  0x24+CPSW_SL2  
++#define  SL2_TX_GAP  0x28+CPSW_SL2  
++//#define MDIO          0x4A101000
++//#define CPSW_WR       0x4A101200
++//#define CPPI_RAM      0x4A102000
+ #endif
+-- 
+1.9.1
+

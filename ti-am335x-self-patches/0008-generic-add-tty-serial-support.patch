@@ -1,0 +1,446 @@
+From 364c6d58c368b50de1342d5a1d6fc6211c6f5086 Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Tue, 1 Mar 2016 09:46:38 +0800
+Subject: [PATCH 08/14] generic: add tty serial support
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ arch/arm/mach-generic/Kconfig         |   1 +
+ arch/arm/mach-generic/Makefile        |   2 +-
+ arch/arm/mach-generic/board-generic.c |  45 +++++
+ arch/arm/mach-generic/generic.c       |   5 +-
+ arch/arm/mach-generic/plat.h          |   2 +
+ drivers/tty/serial/Makefile           |   1 +
+ drivers/tty/serial/generic_serial.c   | 303 ++++++++++++++++++++++++++++++++++
+ 7 files changed, 356 insertions(+), 3 deletions(-)
+ create mode 100644 arch/arm/mach-generic/board-generic.c
+ create mode 100644 drivers/tty/serial/generic_serial.c
+
+diff --git a/arch/arm/mach-generic/Kconfig b/arch/arm/mach-generic/Kconfig
+index a2a101c..c85855b 100644
+--- a/arch/arm/mach-generic/Kconfig
++++ b/arch/arm/mach-generic/Kconfig
+@@ -6,3 +6,4 @@ config PLAT_GENERIC
+ 	bool
+ 	depends on ARCH_MULTI_V6
+ 	select GENERIC_IRQ_CHIP
++	select SERIAL_CORE
+diff --git a/arch/arm/mach-generic/Makefile b/arch/arm/mach-generic/Makefile
+index 457276a..33d9e8f 100644
+--- a/arch/arm/mach-generic/Makefile
++++ b/arch/arm/mach-generic/Makefile
+@@ -2,4 +2,4 @@
+ #ccflags-$(CONFIG_ARCH_MULTIPLATFORM) := -I$(srctree)/$(src)/include \
+ 	-I$(srctree)/arch/arm/plat-omap/include
+ 
+-obj-y := generic.o interrupt.o timer.o clk.o
++obj-y := generic.o interrupt.o timer.o clk.o board-generic.o
+diff --git a/arch/arm/mach-generic/board-generic.c b/arch/arm/mach-generic/board-generic.c
+new file mode 100644
+index 0000000..aa8426b
+--- /dev/null
++++ b/arch/arm/mach-generic/board-generic.c
+@@ -0,0 +1,45 @@
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/clk.h>
++#include <linux/platform_device.h>
++#include <linux/gpio.h>
++#include <linux/platform_data/pca953x.h>
++#include <linux/can/platform/ti_hecc.h>
++#include <linux/davinci_emac.h>
++#include <linux/mmc/host.h>
++#include <linux/usb/musb.h>
++#include <linux/platform_data/gpio-omap.h>
++#include <linux/irq.h>
++
++#include <asm/exception.h>
++#include <asm/mach/irq.h>
++#include <asm/mach-types.h>
++#include <asm/mach/arch.h>
++#include <asm/mach/map.h>
++#include <asm/setup.h>
++#include "plat.h"
++
++#define GENERIC_UART_RESOURCE_BASE 0x44E09000
++static struct resource generic_uart_resources[] = {
++	{
++		.start	= GENERIC_UART_RESOURCE_BASE,
++		.end	= GENERIC_UART_RESOURCE_BASE + 0x3FFF,
++		.flags	= IORESOURCE_MEM,
++	},
++	{
++		.start	= 72,
++		.flags	= IORESOURCE_IRQ,
++	},
++};
++
++static struct platform_device generic_uart_device = {
++	.name                   = "generic_uart",
++	.id                     = 0,
++	.num_resources	= ARRAY_SIZE(generic_uart_resources),
++	.resource	= generic_uart_resources,
++};
++
++void __init board_generic_init(void)
++{
++	platform_device_register(&generic_uart_device);
++}
+diff --git a/arch/arm/mach-generic/generic.c b/arch/arm/mach-generic/generic.c
+index f3d8052..b1421c2 100644
+--- a/arch/arm/mach-generic/generic.c
++++ b/arch/arm/mach-generic/generic.c
+@@ -57,9 +57,10 @@ void __init generic_init_irq(void)
+ 	omap_init_irq(OMAP_INTR_CON_BASE, 96);
+ }
+ 
+-void __init generic_init(void)
++void __init generic_machine_init(void)
+ {
+ 	early_print("%s\n", __func__);
++	board_generic_init();
+ }
+ 
+ void __init generic_init_late(void)
+@@ -91,7 +92,7 @@ MACHINE_START(OMAP3517EVM, "generic board")
+ 	.init_early	= generic_init_early,
+ 	.init_irq	= generic_init_irq,
+ 	.handle_irq	= generic_intc_handle_irq,
+-	.init_machine	= generic_init,
++	.init_machine	= generic_machine_init,
+ 	.init_late	= generic_init_late,
+ 	.init_time	= generic_sync32k_timer_init,
+ 	.restart	= generic_restart,
+diff --git a/arch/arm/mach-generic/plat.h b/arch/arm/mach-generic/plat.h
+index 6b5a09a..483bc5c 100644
+--- a/arch/arm/mach-generic/plat.h
++++ b/arch/arm/mach-generic/plat.h
+@@ -6,5 +6,7 @@ void generic_timer_init(void);
+ void generic_clk_init(void);
+ void g_timer_dump(void);
+ void test_irq(void);
++void __init board_generic_init(void);
++
+ extern struct irq_domain *domain;
+ #endif
+diff --git a/drivers/tty/serial/Makefile b/drivers/tty/serial/Makefile
+index 3680854..cd48342 100644
+--- a/drivers/tty/serial/Makefile
++++ b/drivers/tty/serial/Makefile
+@@ -87,3 +87,4 @@ obj-$(CONFIG_SERIAL_EFM32_UART) += efm32-uart.o
+ obj-$(CONFIG_SERIAL_ARC)	+= arc_uart.o
+ obj-$(CONFIG_SERIAL_RP2)	+= rp2.o
+ obj-$(CONFIG_SERIAL_FSL_LPUART)	+= fsl_lpuart.o
++obj-y += generic_serial.o
+diff --git a/drivers/tty/serial/generic_serial.c b/drivers/tty/serial/generic_serial.c
+new file mode 100644
+index 0000000..999bcc2
+--- /dev/null
++++ b/drivers/tty/serial/generic_serial.c
+@@ -0,0 +1,303 @@
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/timer.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <linux/console.h>
++#include <linux/tty.h>
++#include <linux/tty_flip.h>
++#include <linux/serial.h>
++#include <linux/serial_core.h>
++#include <linux/platform_device.h>
++#include <linux/of.h>
++#include <linux/io.h>
++//#include <linux/generic_uart.h>
++#include <linux/clk.h>
++#include <linux/serial_core.h>
++#include <asm/setup.h>
++
++#define DRV_NAME "generic_uart"
++
++#define SERIAL_GENERIC_MAJOR 204
++#define SERIAL_GENERIC_MINOR 213
++/*
++ * Local per-uart structure.
++ */
++struct generic_uart {
++	struct uart_port port;
++	struct timer_list tmr;
++	unsigned int sigs;	/* Local copy of line sigs */
++	unsigned short imr;	/* Local IMR mirror */
++};
++
++static struct generic_uart generic_uart_ports;
++static struct uart_driver generic_uart_driver;
++static struct console generic_uart_console;
++
++static void generic_uart_console_write(struct console *co, const char *s,
++				      unsigned int count)
++{
++	early_print("%s \n", __func__);
++}
++
++static int __init generic_uart_console_setup(struct console *co, char *options)
++{
++	early_print("%s \n", __func__);
++	return 0;
++}
++
++static struct uart_driver generic_uart_driver = {
++	.owner		= THIS_MODULE,
++	.driver_name	= DRV_NAME,
++	.dev_name	= "ttyOS",
++	.major		= SERIAL_GENERIC_MAJOR,
++	.minor		= SERIAL_GENERIC_MINOR,
++	.nr		= 1,
++	.cons		= &generic_uart_console,
++};
++
++static struct console generic_uart_console = {
++	.name	= "ttyOS",
++	.write	= generic_uart_console_write,
++	.device	= uart_console_device,
++	.setup	= generic_uart_console_setup,
++	.flags	= CON_PRINTBUFFER,
++	.index	= -1,
++	.data	= &generic_uart_driver,
++};
++
++static int __init generic_uart_console_init(void)
++{
++	early_print("zz %s \n", __func__);
++	register_console(&generic_uart_console);
++	return 0;
++}
++console_initcall(generic_uart_console_init);
++
++static unsigned int generic_uart_tx_empty(struct uart_port *port)
++{
++	early_print("%s \n", __func__);
++	return 0;
++}
++
++static unsigned int generic_uart_get_mctrl(struct uart_port *port)
++{
++	struct generic_uart *pp = container_of(port, struct generic_uart, port);
++	unsigned int sigs;
++	early_print("%s \n", __func__);
++	sigs |= (pp->sigs & TIOCM_RTS);
++	return sigs;
++}
++
++static void generic_uart_set_mctrl(struct uart_port *port, unsigned int sigs)
++{
++	struct generic_uart *pp = container_of(port, struct generic_uart, port);
++	early_print("%s \n", __func__);
++	pp->sigs = sigs;
++	if (sigs & TIOCM_RTS)
++		pp->imr |= 0;
++	else
++		pp->imr &= ~0x1;
++}
++
++static void generic_uart_start_tx(struct uart_port *port)
++{
++	early_print("%s \n", __func__);
++}
++
++static void generic_uart_stop_tx(struct uart_port *port)
++{
++	early_print("%s \n", __func__);
++}
++
++static void generic_uart_stop_rx(struct uart_port *port)
++{
++	early_print("%s \n", __func__);
++}
++
++static void generic_uart_break_ctl(struct uart_port *port, int break_state)
++{
++	early_print("%s \n", __func__);
++}
++
++static void generic_uart_set_termios(struct uart_port *port,
++				    struct ktermios *termios,
++				    struct ktermios *old)
++{
++	early_print("%s \n", __func__);
++}
++
++static void generic_uart_rx_chars(struct generic_uart *pp)
++{
++	early_print("%s \n", __func__);
++}
++
++static void generic_uart_tx_chars(struct generic_uart *pp)
++{
++	early_print("%s \n", __func__);
++
++}
++
++static irqreturn_t generic_uart_interrupt(int irq, void *data)
++{
++	early_print("%s \n", __func__);
++
++	return IRQ_HANDLED;
++}
++
++static void generic_uart_timer(unsigned long data)
++{
++	early_print("%s \n", __func__);
++}
++
++static void generic_uart_config_port(struct uart_port *port, int flags)
++{
++	port->type = PORT_ALTERA_UART;
++	early_print("%s \n", __func__);
++}
++
++static int generic_uart_startup(struct uart_port *port)
++{
++	early_print("%s \n", __func__);
++	return 0;
++}
++
++static void generic_uart_shutdown(struct uart_port *port)
++{
++	early_print("%s \n", __func__);
++}
++
++static const char *generic_uart_type(struct uart_port *port)
++{
++	early_print("%s \n", __func__);
++	return "Generic UART";
++}
++
++static int generic_uart_request_port(struct uart_port *port)
++{
++	early_print("%s \n", __func__);
++	return 0;
++}
++
++static void generic_uart_release_port(struct uart_port *port)
++{
++	early_print("%s \n", __func__);
++
++}
++
++static int generic_uart_verify_port(struct uart_port *port,
++				   struct serial_struct *ser)
++{
++	early_print("%s \n", __func__);
++	return 0;
++}
++
++#ifdef CONFIG_CONSOLE_POLL
++static int generic_uart_poll_get_char(struct uart_port *port)
++{
++	early_print("%s \n", __func__);
++	return 0;
++}
++
++static void generic_uart_poll_put_char(struct uart_port *port, unsigned char c)
++{
++	early_print("%s \n", __func__);
++}
++#endif
++
++static struct uart_ops generic_uart_ops = {
++	.tx_empty	= generic_uart_tx_empty,
++	.get_mctrl	= generic_uart_get_mctrl,
++	.set_mctrl	= generic_uart_set_mctrl,
++	.start_tx	= generic_uart_start_tx,
++	.stop_tx	= generic_uart_stop_tx,
++	.stop_rx	= generic_uart_stop_rx,
++	.break_ctl	= generic_uart_break_ctl,
++	.startup	= generic_uart_startup,
++	.shutdown	= generic_uart_shutdown,
++	.set_termios	= generic_uart_set_termios,
++	.type		= generic_uart_type,
++	.request_port	= generic_uart_request_port,
++	.release_port	= generic_uart_release_port,
++	.config_port	= generic_uart_config_port,
++	.verify_port	= generic_uart_verify_port,
++#ifdef CONFIG_CONSOLE_POLL
++	.poll_get_char	= generic_uart_poll_get_char,
++	.poll_put_char	= generic_uart_poll_put_char,
++#endif
++};
++
++static int generic_uart_probe(struct platform_device *pdev)
++{
++	struct uart_port *port;
++	struct resource *res_mem;
++	struct resource *res_irq;
++
++	early_print("zz %s \n", __func__);
++
++	port = &generic_uart_ports;
++	res_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (res_mem)
++		port->mapbase = res_mem->start;
++
++	res_irq = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
++	if (res_irq)
++		port->irq = res_irq->start;
++	port->uartclk = 115200;
++	dev_info(&pdev->dev, "IO resource:%08x \n", port->mapbase);
++	dev_info(&pdev->dev, "clk rate:%d \n", port->uartclk);
++	dev_info(&pdev->dev, "irq:%d \n", port->irq);
++	port->membase = ioremap(port->mapbase, 0x1000);
++	if (!port->membase)
++		return -ENOMEM;
++
++	port->line = 0;
++	port->type = PORT_ALTERA_UART;
++	port->iotype = SERIAL_IO_MEM;
++	port->ops = &generic_uart_ops;
++	port->flags = UPF_BOOT_AUTOCONF;
++	port->dev = &pdev->dev;
++
++	platform_set_drvdata(pdev, port);
++
++	uart_add_one_port(&generic_uart_driver, port);
++	return 0;
++}
++
++static int generic_uart_remove(struct platform_device *pdev)
++{
++	early_print("zz %s \n", __func__);
++	return 0;
++}
++
++static struct platform_driver generic_uart_platform_driver = {
++	.probe	= generic_uart_probe,
++	.remove	= generic_uart_remove,
++	.driver	= {
++		.name		= DRV_NAME,
++	},
++};
++
++static int __init generic_uart_init(void)
++{
++	early_print("%s +\n", __func__);
++	uart_register_driver(&generic_uart_driver);
++	platform_driver_register(&generic_uart_platform_driver);
++	early_print("%s -\n", __func__);
++	return 0;
++}
++
++static void __exit generic_uart_exit(void)
++{
++	early_print("%s \n", __func__);
++	platform_driver_unregister(&generic_uart_platform_driver);
++}
++
++module_init(generic_uart_init);
++module_exit(generic_uart_exit);
++
++MODULE_DESCRIPTION("Altera UART driver");
++MODULE_AUTHOR("Thomas Chou <thomas@wytron.com.tw>");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("platform:" DRV_NAME);
++MODULE_ALIAS_CHARDEV_MAJOR(SERIAL_GENERIC_MAJOR);
+-- 
+1.9.1
+

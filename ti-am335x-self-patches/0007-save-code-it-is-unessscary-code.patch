@@ -1,0 +1,124 @@
+From a464ca4f9cf95bbe3b62b5f52e0ef055720ae8a7 Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Mon, 29 Feb 2016 15:22:44 +0800
+Subject: [PATCH 07/14] save code, it is unessscary code
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ arch/arm/kernel/irq.c             | 2 ++
+ arch/arm/kernel/setup.c           | 2 +-
+ arch/arm/mach-generic/interrupt.c | 4 ++--
+ arch/arm/mach-generic/timer.c     | 6 +++---
+ drivers/clk/clk-divider.c         | 4 ++++
+ 5 files changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/arch/arm/kernel/irq.c b/arch/arm/kernel/irq.c
+index 1e782bd..42bb19f 100644
+--- a/arch/arm/kernel/irq.c
++++ b/arch/arm/kernel/irq.c
+@@ -41,6 +41,7 @@
+ #include <asm/mach/arch.h>
+ #include <asm/mach/irq.h>
+ #include <asm/mach/time.h>
++#include <asm/setup.h>
+ 
+ unsigned long irq_err_count;
+ 
+@@ -66,6 +67,7 @@ void handle_IRQ(unsigned int irq, struct pt_regs *regs)
+ {
+ 	struct pt_regs *old_regs = set_irq_regs(regs);
+ 
++	//early_print("%s\n", __func__);
+ 	irq_enter();
+ 
+ 	/*
+diff --git a/arch/arm/kernel/setup.c b/arch/arm/kernel/setup.c
+index 8002f5e..62076d1 100644
+--- a/arch/arm/kernel/setup.c
++++ b/arch/arm/kernel/setup.c
+@@ -880,7 +880,7 @@ void __init setup_arch(char **cmdline_p)
+ 	const struct machine_desc *mdesc;
+ 
+ 	setup_processor();
+-	mdesc = setup_machine_fdt(__atags_pointer);
++	//mdesc = setup_machine_fdt(__atags_pointer);
+ 	if (!mdesc)
+ 		mdesc = setup_machine_tags(__atags_pointer, __machine_arch_type);
+ 	machine_desc = mdesc;
+diff --git a/arch/arm/mach-generic/interrupt.c b/arch/arm/mach-generic/interrupt.c
+index 0d175f4..b8db7bc 100644
+--- a/arch/arm/mach-generic/interrupt.c
++++ b/arch/arm/mach-generic/interrupt.c
+@@ -200,10 +200,10 @@ out:
+ 
+ 		irqnr = readl_relaxed(base_addr + INTCPS_SIR_IRQ_OFFSET);
+ 		irqnr &= ACTIVEIRQ_MASK;
+-		early_print("IRQ :%d", irqnr);
++		//early_print("IRQ :%d", irqnr);
+ 		if (irqnr) {
+ 			irqnr = irq_find_mapping(domain, irqnr);
+-			early_print("domain IRQ :%d\n", irqnr);
++			//early_print("domain IRQ :%d\n", irqnr);
+ 			handle_IRQ(irqnr, regs);
+ 		}
+ 	} while (irqnr);
+diff --git a/arch/arm/mach-generic/timer.c b/arch/arm/mach-generic/timer.c
+index f0d4b3d..19d8bbb 100644
+--- a/arch/arm/mach-generic/timer.c
++++ b/arch/arm/mach-generic/timer.c
+@@ -98,7 +98,7 @@ static irqreturn_t omap2_gp_timer_interrupt(int irq, void *dev_id)
+ 	u32 reg;
+ 	struct clock_event_device *evt = &clockevent_generic;
+ 	reg = __raw_readl(dmt_base_reg +IRQSTATUS);
+-	early_print("%s %08x\n", __func__, reg);
++	//early_print("%s %08x\n", __func__, reg);
+ 	evt->event_handler(evt);
+ 	__raw_writel(reg, dmt_base_reg+IRQSTATUS);
+ 	return IRQ_HANDLED;
+@@ -167,8 +167,8 @@ static void __init low_generic_timer_init(void __iomem *base)
+ 	 * Set auto-reload and current-count values.  This timer hardware counts
+ 	 * up from the initial/reload value and interrupts on the zero rollover.
+ 	 */
+-	__raw_writel(0xFFFFFFFF - 0x8000, base+TLDR);
+-	__raw_writel(0xFFFFFFFF - 0x8000, base+TCRR);
++	__raw_writel(0xFFFFFFFF - 0x2000, base+TLDR);
++	__raw_writel(0xFFFFFFFF - 0x2000, base+TCRR);
+ 
+ 	/* Enable overflow interrupt, and start the timer. */
+ 	__raw_writel(DMT_IRQ_OVF, base+IRQENABLE_SET);
+diff --git a/drivers/clk/clk-divider.c b/drivers/clk/clk-divider.c
+index 06be844..9fa85c2 100644
+--- a/drivers/clk/clk-divider.c
++++ b/drivers/clk/clk-divider.c
+@@ -245,17 +245,20 @@ static int clk_divider_set_rate(struct clk_hw *hw, unsigned long rate,
+ 
+ int clk_divider_save_context(struct clk_hw *hw)
+ {
++#if 0
+ 	struct clk_divider *divider = to_clk_divider(hw);
+ 	u32 val;
+ 
+ 	val = ti_clk_ll_ops->clk_readl(divider->reg) >> divider->shift;
+ 	divider->context = val & div_mask(divider);
++#endif
+ 
+ 	return 0;
+ }
+ 
+ void clk_divider_restore_context(struct clk_hw *hw)
+ {
++#if 0
+ 	struct clk_divider *divider = to_clk_divider(hw);
+ 	u32 val;
+ 
+@@ -263,6 +266,7 @@ void clk_divider_restore_context(struct clk_hw *hw)
+ 	val &= ~(div_mask(divider) << divider->shift);
+ 	val |= divider->context << divider->shift;
+ 	ti_clk_ll_ops->clk_writel(val, divider->reg);
++#endif
+ }
+ 
+ const struct clk_ops clk_divider_ops = {
+-- 
+1.9.1
+

@@ -1,0 +1,501 @@
+From 8c62816526ea796767298c63967367c9fea62f5f Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Fri, 26 Feb 2016 18:26:12 +0800
+Subject: [PATCH 05/14] generic: timer interrupt can trigger
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ arch/arm/configs/generic_defconfig |   1 +
+ arch/arm/mach-generic/Makefile     |   2 +-
+ arch/arm/mach-generic/clk.c        | 147 +++++++++++++++++++++++++++++++++++++
+ arch/arm/mach-generic/generic.c    |  14 ++--
+ arch/arm/mach-generic/interrupt.c  |  78 +++++++++++++++++++-
+ arch/arm/mach-generic/plat.h       |  10 ++-
+ arch/arm/mach-generic/timer.c      | 120 ++++++++++++++++++++++++++++++
+ 7 files changed, 359 insertions(+), 13 deletions(-)
+ create mode 100644 arch/arm/mach-generic/clk.c
+ create mode 100644 arch/arm/mach-generic/timer.c
+
+diff --git a/arch/arm/configs/generic_defconfig b/arch/arm/configs/generic_defconfig
+index 48d2bf1..8cb58b2 100644
+--- a/arch/arm/configs/generic_defconfig
++++ b/arch/arm/configs/generic_defconfig
+@@ -5,3 +5,4 @@ CONFIG_DEBUG_GENERIC_UART1=y
+ CONFIG_DEBUG_LL=y
+ #CONFIG_GENERIC_UART1=Y
+ DEBUG_AM33XXUART1=y
++CONFIG_GENERIC_IRQ_CHIP=y
+diff --git a/arch/arm/mach-generic/Makefile b/arch/arm/mach-generic/Makefile
+index 7f13ab2..457276a 100644
+--- a/arch/arm/mach-generic/Makefile
++++ b/arch/arm/mach-generic/Makefile
+@@ -2,4 +2,4 @@
+ #ccflags-$(CONFIG_ARCH_MULTIPLATFORM) := -I$(srctree)/$(src)/include \
+ 	-I$(srctree)/arch/arm/plat-omap/include
+ 
+-obj-y := generic.o interrupt.o
++obj-y := generic.o interrupt.o timer.o clk.o
+diff --git a/arch/arm/mach-generic/clk.c b/arch/arm/mach-generic/clk.c
+new file mode 100644
+index 0000000..178fc75
+--- /dev/null
++++ b/arch/arm/mach-generic/clk.c
+@@ -0,0 +1,147 @@
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++
++#include <asm/exception.h>
++#include <asm/mach/irq.h>
++#include <linux/irqdomain.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/irq.h>
++#include <asm/setup.h>
++#include <linux/time.h>
++#include "plat.h"
++
++#define CM_PER_L4LS_CLKSTCTRL 0x0 
++#define CM_PER_L3S_CLKSTCTRL 0x4 
++#define CM_PER_L3_CLKSTCTRL 0xC 
++#define CM_PER_CPGMAC0_CLKCTRL 0x14 
++#define CM_PER_LCDC_CLKCTRL 0x18 
++#define CM_PER_USB0_CLKCTRL 0x1C 
++#define CM_PER_TPTC0_CLKCTRL 0x24 
++#define CM_PER_EMIF_CLKCTRL 0x28 
++#define CM_PER_OCMCRAM_CLKCTRL 0x2C 
++#define CM_PER_GPMC_CLKCTRL 0x30 
++#define CM_PER_MCASP0_CLKCTRL 0x34 
++#define CM_PER_UART5_CLKCTRL 0x38 
++#define CM_PER_MMC0_CLKCTRL 0x3C 
++#define CM_PER_ELM_CLKCTRL 0x40 
++#define CM_PER_I2C2_CLKCTRL 0x44 
++#define CM_PER_I2C1_CLKCTRL 0x48 
++#define CM_PER_SPI0_CLKCTRL 0x4C 
++#define CM_PER_SPI1_CLKCTRL 0x50 
++#define CM_PER_L4LS_CLKCTRL 0x60 
++#define CM_PER_MCASP1_CLKCTRL 0x68 
++#define CM_PER_UART1_CLKCTRL 0x6C 
++#define CM_PER_UART2_CLKCTRL 0x70 
++#define CM_PER_UART3_CLKCTRL 0x74 
++#define CM_PER_UART4_CLKCTRL 0x78 
++#define CM_PER_TIMER7_CLKCTRL 0x7C 
++#define CM_PER_TIMER2_CLKCTRL 0x80 
++#define CM_PER_TIMER3_CLKCTRL 0x84 
++#define CM_PER_TIMER4_CLKCTRL 0x88 
++#define CM_PER_GPIO1_CLKCTRL 0xAC 
++#define CM_PER_GPIO2_CLKCTRL 0xB0 
++#define CM_PER_GPIO3_CLKCTRL 0xB4 
++#define CM_PER_TPCC_CLKCTRL 0xBC 
++#define CM_PER_DCAN0_CLKCTRL 0xC0 
++#define CM_PER_DCAN1_CLKCTRL 0xC4 
++#define CM_PER_EPWMSS1_CLKCTRL 0xCC 
++#define CM_PER_EPWMSS0_CLKCTRL 0xD4 
++#define CM_PER_EPWMSS2_CLKCTRL 0xD8 
++#define CM_PER_L3_INSTR_CLKCTRL 0xDC 
++#define CM_PER_L3_CLKCTRL 0xE0 
++#define CM_PER_IEEE5000_CLKCTRL 0xE4 
++#define CM_PER_PRU_ICSS_CLKCTRL 0xE8 
++#define CM_PER_TIMER5_CLKCTRL 0xEC 
++#define CM_PER_TIMER6_CLKCTRL 0xF0 
++#define CM_PER_MMC1_CLKCTRL 0xF4 
++#define CM_PER_MMC2_CLKCTRL 0xF8 
++#define CM_PER_TPTC1_CLKCTRL 0xFC 
++#define CM_PER_TPTC2_CLKCTRL 0x100 
++#define CM_PER_SPINLOCK_CLKCTRL 0x10C 
++#define CM_PER_MAILBOX0_CLKCTRL 0x110 
++#define CM_PER_L4HS_CLKSTCTRL 0x11C 
++#define CM_PER_L4HS_CLKCTRL 0x120 
++#define CM_PER_OCPWP_L3_CLKSTCT 0x12C 
++#define CM_PER_OCPWP_CLKCTRL 0x130 
++#define CM_PER_PRU_ICSS_CLKSTCTR 0x140 
++#define CM_PER_CPSW_CLKSTCTRL 0x144 
++#define CM_PER_LCDC_CLKSTCTRL 0x148 
++#define CM_PER_CLKDIV32K_CLKCTRL 0x14C 
++#define CM_PER_CLK_24MHZ_CLKSTCT 0x150 
++
++#define CLK_BASE_REG 0x44E00000
++static void __iomem *clk_base_reg;
++
++void clk_dump(void __iomem *base)
++{
++early_print("CM_PER_L4LS_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_L4LS_CLKSTCTRL));  
++early_print("CM_PER_L3S_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_L3S_CLKSTCTRL));  
++early_print("CM_PER_L3_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_L3_CLKSTCTRL));  
++early_print("CM_PER_CPGMAC0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_CPGMAC0_CLKCTRL));  
++early_print("CM_PER_LCDC_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_LCDC_CLKCTRL));  
++early_print("CM_PER_USB0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_USB0_CLKCTRL));  
++early_print("CM_PER_TPTC0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TPTC0_CLKCTRL));  
++early_print("CM_PER_EMIF_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_EMIF_CLKCTRL));  
++early_print("CM_PER_OCMCRAM_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_OCMCRAM_CLKCTRL));  
++early_print("CM_PER_GPMC_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_GPMC_CLKCTRL));  
++early_print("CM_PER_MCASP0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MCASP0_CLKCTRL));  
++early_print("CM_PER_UART5_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_UART5_CLKCTRL));  
++early_print("CM_PER_MMC0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MMC0_CLKCTRL));  
++early_print("CM_PER_ELM_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_ELM_CLKCTRL));  
++early_print("CM_PER_I2C2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_I2C2_CLKCTRL));  
++early_print("CM_PER_I2C1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_I2C1_CLKCTRL));  
++early_print("CM_PER_SPI0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_SPI0_CLKCTRL));  
++early_print("CM_PER_SPI1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_SPI1_CLKCTRL));  
++early_print("CM_PER_L4LS_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_L4LS_CLKCTRL));  
++early_print("CM_PER_MCASP1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MCASP1_CLKCTRL));  
++early_print("CM_PER_UART1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_UART1_CLKCTRL));  
++early_print("CM_PER_UART2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_UART2_CLKCTRL));  
++early_print("CM_PER_UART3_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_UART3_CLKCTRL));  
++early_print("CM_PER_UART4_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_UART4_CLKCTRL));  
++early_print("CM_PER_TIMER7_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER7_CLKCTRL));  
++early_print("CM_PER_TIMER2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER2_CLKCTRL));  
++early_print("CM_PER_TIMER3_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER3_CLKCTRL));  
++early_print("CM_PER_TIMER4_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER4_CLKCTRL));  
++early_print("CM_PER_GPIO1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_GPIO1_CLKCTRL));  
++early_print("CM_PER_GPIO2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_GPIO2_CLKCTRL));  
++early_print("CM_PER_GPIO3_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_GPIO3_CLKCTRL));  
++early_print("CM_PER_TPCC_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TPCC_CLKCTRL));  
++early_print("CM_PER_DCAN0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_DCAN0_CLKCTRL));  
++early_print("CM_PER_DCAN1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_DCAN1_CLKCTRL));  
++early_print("CM_PER_EPWMSS1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_EPWMSS1_CLKCTRL));  
++early_print("CM_PER_EPWMSS0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_EPWMSS0_CLKCTRL));  
++early_print("CM_PER_EPWMSS2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_EPWMSS2_CLKCTRL));  
++early_print("CM_PER_L3_INSTR_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_L3_INSTR_CLKCTRL));  
++early_print("CM_PER_L3_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_L3_CLKCTRL));  
++early_print("CM_PER_IEEE5000_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_IEEE5000_CLKCTRL));  
++early_print("CM_PER_PRU_ICSS_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_PRU_ICSS_CLKCTRL));  
++early_print("CM_PER_TIMER5_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER5_CLKCTRL));  
++early_print("CM_PER_TIMER6_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER6_CLKCTRL));  
++early_print("CM_PER_MMC1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MMC1_CLKCTRL));  
++early_print("CM_PER_MMC2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MMC2_CLKCTRL));  
++early_print("CM_PER_TPTC1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TPTC1_CLKCTRL));  
++early_print("CM_PER_TPTC2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TPTC2_CLKCTRL));  
++early_print("CM_PER_SPINLOCK_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_SPINLOCK_CLKCTRL));  
++early_print("CM_PER_MAILBOX0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MAILBOX0_CLKCTRL));  
++early_print("CM_PER_L4HS_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_L4HS_CLKSTCTRL));  
++early_print("CM_PER_L4HS_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_L4HS_CLKCTRL));  
++early_print("CM_PER_OCPWP_L3_CLKSTCT:%08x\n", __raw_readl(base+CM_PER_OCPWP_L3_CLKSTCT));  
++early_print("CM_PER_OCPWP_CLKCTRL:%08x\n", __raw_readl(CM_PER_OCPWP_CLKCTRL));  
++early_print("CM_PER_PRU_ICSS_CLKSTCTR:%08x\n", __raw_readl(base+CM_PER_PRU_ICSS_CLKSTCTR));  
++early_print("CM_PER_CPSW_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_CPSW_CLKSTCTRL));  
++early_print("CM_PER_LCDC_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_LCDC_CLKSTCTRL));  
++early_print("CM_PER_CLKDIV32K_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_CLKDIV32K_CLKCTRL));  
++early_print("CM_PER_CLK_24MHZ_CLKSTCT:%08x\n", __raw_readl(base+CM_PER_CLK_24MHZ_CLKSTCT));  
++
++}
++
++void generic_clk_init(void)
++{
++	clk_base_reg = ioremap(CLK_BASE_REG, SZ_16K);
++	clk_dump(clk_base_reg);
++}
+diff --git a/arch/arm/mach-generic/generic.c b/arch/arm/mach-generic/generic.c
+index 7b410c8..f3d8052 100644
+--- a/arch/arm/mach-generic/generic.c
++++ b/arch/arm/mach-generic/generic.c
+@@ -11,6 +11,8 @@
+ #include <linux/platform_data/gpio-omap.h>
+ #include <linux/irq.h>
+ 
++#include <asm/exception.h>
++#include <asm/mach/irq.h>
+ #include <asm/mach-types.h>
+ #include <asm/mach/arch.h>
+ #include <asm/mach/map.h>
+@@ -55,11 +57,6 @@ void __init generic_init_irq(void)
+ 	omap_init_irq(OMAP_INTR_CON_BASE, 96);
+ }
+ 
+-void __init generic_intc_handle_irq(void)
+-{
+-	early_print("%s\n", __func__);
+-}
+-
+ void __init generic_init(void)
+ {
+ 	early_print("%s\n", __func__);
+@@ -72,6 +69,8 @@ void __init generic_init_late(void)
+ 
+ void __init generic_sync32k_timer_init(void)
+ {
++	//generic_clk_init();
++	generic_timer_init();
+ 	early_print("%s\n", __func__);
+ }
+ 
+@@ -80,6 +79,11 @@ void __init generic_restart(void)
+ 	early_print("%s\n", __func__);
+ }
+ 
++asmlinkage void __exception_irq_entry low_generic_intc_handle_irq(struct pt_regs *regs)
++{
++	generic_intc_handle_irq(regs);
++}
++
+ MACHINE_START(OMAP3517EVM, "generic board")
+ 	.atag_offset	= 0x100,
+ 	.reserve	= generic_reserve,
+diff --git a/arch/arm/mach-generic/interrupt.c b/arch/arm/mach-generic/interrupt.c
+index a439e37..0d175f4 100644
+--- a/arch/arm/mach-generic/interrupt.c
++++ b/arch/arm/mach-generic/interrupt.c
+@@ -26,10 +26,13 @@
+ #define INTC_MIR_CLEAR0		0x0088
+ #define INTC_MIR_SET0		0x008c
+ #define INTC_ISR_SET0       0x0090
++#define INTC_ISR_CLEAR0       0x0094
+ #define INTC_PENDING_IRQ0	0x0098
+ 
+ /* Number of IRQ state bits in each MIR register */
+ #define IRQ_BITS_PER_REG	32
++#define INTCPS_SIR_IRQ_OFFSET	0x0040	/* omap2/3 active interrupt offset */
++#define ACTIVEIRQ_MASK		0x7f	/* omap2/3 active interrupt bits */
+ static struct gen_irq_bank {
+ 	void __iomem *base_reg;
+ 	unsigned int nr_irqs;
+@@ -39,7 +42,7 @@ static struct gen_irq_bank {
+ 		.nr_irqs	= 96,
+ 	},
+ };
+-static struct irq_domain *domain;
++struct irq_domain *domain;
+ 
+ 
+ static void intc_bank_write_reg(u32 val, struct gen_irq_bank *bank, u16 reg)
+@@ -117,9 +120,26 @@ gen_alloc_gc(void __iomem *base, unsigned int irq_start, unsigned int num)
+ 				IRQ_NOREQUEST | IRQ_NOPROBE, 0);
+ }
+ 
++static irqreturn_t omap2_sw_interrupt(int irq, void *dev_id)
++{
++	u32 status = intc_bank_read_reg(irq_banks + 0, INTC_ISR_SET0);
++	early_print("%s INTC_PENDING_IRQ:%08x %08x\n", __func__, intc_bank_read_reg(irq_banks + 0, INTC_PENDING_IRQ0), status);
++	//intc_bank_write_reg(status, irq_banks + 0, INTC_ISR_CLEAR0);
++	g_timer_dump();
++	return IRQ_HANDLED;
++}
++
++static struct irqaction omap2_sw_irq = {
++	.name           = "sw_irq",
++	//.flags          = IRQF_IRQPOLL,
++	.flags          = IRQF_DISABLED,
++	.handler        = omap2_sw_interrupt,
++};
++
+ void __init omap_init_irq(u32 base, int nr_irqs)
+ {
+ 	int j, irq_base;
++	u32 irqnr;
+ 	struct gen_irq_bank *bank = irq_banks + 0;
+ 
+ 	irq_base = irq_alloc_descs(-1, 0, nr_irqs, 0);
+@@ -137,10 +157,60 @@ void __init omap_init_irq(u32 base, int nr_irqs)
+ 	for (j = 0; j < bank->nr_irqs; j += 32)
+ 		gen_alloc_gc(bank->base_reg + j, j + irq_base, 32);
+ 	early_print("allocate IRQ numbers:%d\n", bank->nr_irqs);
+-#if 0
++#if 1
++
++	irqnr = irq_find_mapping(domain, 2);
++	if (irqnr)
++		setup_irq(irqnr, &omap2_sw_irq);
++
++	intc_bank_write_reg(0xfffffff, bank, INTC_PENDING_IRQ0);
+ 	intc_bank_write_reg(0xfffffff, bank, INTC_MIR_CLEAR0);
+-	intc_bank_write_reg(0xfffffff, bank, INTC_ISR_SET0);
+-	irq_dump(bank);
++	//intc_bank_write_reg(0x04, bank, INTC_ISR_SET0);
++	//irq_dump(bank);
++#else
++	//setup_irq(clkev.irq, &omap2_gp_timer_irq);
+ #endif
+ }
+ 
++
++void generic_intc_handle_irq(struct pt_regs *regs)
++{
++	u32 irqnr;
++	void __iomem *base_addr;
++	struct gen_irq_bank *bank = irq_banks + 0;
++	base_addr =bank->base_reg;
++
++	do {
++		irqnr = __raw_readl(base_addr + 0x98);
++		if (irqnr)
++			goto out;
++
++		irqnr = __raw_readl(base_addr + 0xb8);
++		if (irqnr)
++			goto out;
++
++		irqnr = __raw_readl(base_addr + 0xd8);
++		if (irqnr)
++			goto out;
++
++		irqnr = __raw_readl(base_addr + 0xf8);
++out:
++		if (!irqnr)
++			break;
++
++		irqnr = readl_relaxed(base_addr + INTCPS_SIR_IRQ_OFFSET);
++		irqnr &= ACTIVEIRQ_MASK;
++		early_print("IRQ :%d", irqnr);
++		if (irqnr) {
++			irqnr = irq_find_mapping(domain, irqnr);
++			early_print("domain IRQ :%d\n", irqnr);
++			handle_IRQ(irqnr, regs);
++		}
++	} while (irqnr);
++}
++
++void test_irq(void)
++{
++	struct gen_irq_bank *bank = irq_banks + 0;
++	intc_bank_write_reg(0x04, bank, INTC_ISR_SET0);
++}
+diff --git a/arch/arm/mach-generic/plat.h b/arch/arm/mach-generic/plat.h
+index dc60731..6b5a09a 100644
+--- a/arch/arm/mach-generic/plat.h
++++ b/arch/arm/mach-generic/plat.h
+@@ -1,6 +1,10 @@
+ #ifndef _PLAT_H_
+ #define _PLAT_H_
+-void __init omap_init_irq(u32 base, int nr_irqs);
+-
+-
++void omap_init_irq(u32 base, int nr_irqs);
++void generic_intc_handle_irq(struct pt_regs *regs);
++void generic_timer_init(void);
++void generic_clk_init(void);
++void g_timer_dump(void);
++void test_irq(void);
++extern struct irq_domain *domain;
+ #endif
+diff --git a/arch/arm/mach-generic/timer.c b/arch/arm/mach-generic/timer.c
+new file mode 100644
+index 0000000..8a143a0
+--- /dev/null
++++ b/arch/arm/mach-generic/timer.c
+@@ -0,0 +1,120 @@
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++
++#include <asm/exception.h>
++#include <asm/mach/irq.h>
++#include <linux/irqdomain.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/irq.h>
++#include <asm/setup.h>
++#include <linux/time.h>
++#include "plat.h"
++
++#define DMTIMER0_REG_BASE 0x44E05000
++
++#define TIDR 0x0
++#define TIOCP_CFG  0x10
++#define IRQ_EOI  0x20
++#define IRQSTATUS_RAW  0x24
++#define IRQSTATUS  0x28
++#define IRQENABLE_SET  0x2C
++#define IRQENABLE_CLR  0x30
++#define IRQWAKEEN  0x34
++#define TCLR  0x38
++#define TCRR  0x3C
++#define TLDR  0x40
++#define TTGR  0x44
++#define TWPS  0x48
++#define TMAR  0x4C
++#define TCAR1  0x50
++#define TSICR  0x54
++#define TCAR2  0x58
++
++static void __iomem *dmt_base_reg;
++static irqreturn_t omap2_gp_timer_interrupt(int irq, void *dev_id)
++{
++	//struct clock_event_device *evt = &clockevent_gpt;
++
++	//__omap_dm_timer_write_status(&clkev, OMAP_TIMER_INT_OVERFLOW);
++	//evt->event_handler(evt);
++	return IRQ_HANDLED;
++}
++
++static struct irqaction omap2_gp_timer_irq = {
++	.name		= "gp_timer",
++	.flags		= IRQF_TIMER | IRQF_IRQPOLL,
++	.handler	= omap2_gp_timer_interrupt,
++};
++
++
++void timer_dump(void __iomem *base)
++{
++early_print("TIDR:%08x\n",__raw_readl(base+TIDR));  
++early_print("TIOCP_CFG :%08x\n",__raw_readl(base+TIOCP_CFG ));  
++early_print("IRQ_EOI :%08x\n",__raw_readl(base+IRQ_EOI ));  
++early_print("IRQSTATUS_RAW :%08x\n",__raw_readl(base+IRQSTATUS_RAW ));  
++early_print("IRQSTATUS :%08x\n",__raw_readl(base+IRQSTATUS ));  
++early_print("IRQENABLE_SET :%08x\n",__raw_readl(base+IRQENABLE_SET ));  
++early_print("IRQENABLE_CLR :%08x\n",__raw_readl(base+IRQENABLE_CLR ));  
++early_print("IRQWAKEEN :%08x\n",__raw_readl(base+IRQWAKEEN ));  
++early_print("TCLR :%08x\n",__raw_readl(base+TCLR ));  
++early_print("TCRR :%08x\n",__raw_readl(base+TCRR ));  
++early_print("TLDR :%08x\n",__raw_readl(base+TLDR ));  
++early_print("TTGR :%08x\n",__raw_readl(base+TTGR ));  
++early_print("TWPS :%08x\n",__raw_readl(base+TWPS ));  
++early_print("TMAR :%08x\n",__raw_readl(base+TMAR ));  
++early_print("TCAR1 :%08x\n",__raw_readl(base+TCAR1 ));  
++early_print("TSICR :%08x\n",__raw_readl(base+TSICR ));  
++early_print("TCAR2 :%08x\n",__raw_readl(base+TCAR2 ));  
++
++}
++
++void g_timer_dump(void)
++{
++	timer_dump(dmt_base_reg);
++}
++
++#define TIME_START(reg) 		   __raw_writel(__raw_readl(reg+TCLR) | 1<<1, reg+TCLR)
++#define TIME_STOP(reg) 			   __raw_writel(__raw_readl(reg+TCLR) | 1<<1, reg+TCLR)
++#define TIME_SET_CNT(reg, val)     __raw_writel(val, reg+TCRR)
++#define TIME_RELOAD_EN(reg)     __raw_writel(__raw_readl(reg+TCLR) | 1<<1, reg+TCLR)
++#define TIME_RELOAD_DIS(reg)     __raw_writel(__raw_readl(reg+TCLR) & ~(1<<1), reg+TCLR)
++#define TIME_INIT_EN(reg)     __raw_writel(__raw_readl(reg+IRQENABLE_SET) | 0xf, reg+IRQENABLE_SET)
++#define TIME_RESET(reg)    __raw_writel(__raw_readl(reg+TIOCP_CFG) | 1, reg+TCLR) 
++
++static void __init low_generic_timer_init(void __iomem *base)
++{
++#if 0
++	TIME_STOP(base);
++	TIME_RESET(base);
++	TIME_SET_CNT(base, 0xff);
++	TIME_RELOAD_EN(base);
++	TIME_INIT_EN(base);
++	__raw_writel(0xff, base+TLDR);
++	TIME_START(base);
++#else
++	__raw_writel(0x9000, base+TLDR);
++	__raw_writel(0x4000, base+TTGR);
++	TIME_INIT_EN(base);
++	__raw_writel(2<<2 | 1<<5 | 1 <<1 | 1 | 1<<6, base+TCLR);
++	
++#endif
++}
++
++void generic_timer_init(void)
++{
++	u32 irqnr;
++
++	dmt_base_reg = ioremap(DMTIMER0_REG_BASE, SZ_4K);
++	low_generic_timer_init(dmt_base_reg);
++	irqnr = irq_find_mapping(domain, 66);
++	if (irqnr)
++		setup_irq(irqnr,&omap2_gp_timer_irq);
++	//test_irq();
++	//timer_dump(dmt_base_reg);
++}
+-- 
+1.9.1
+

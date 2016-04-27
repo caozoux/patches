@@ -1,0 +1,998 @@
+From 306b9713723e6422ea2f8370ec280a496aefd373 Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Thu, 17 Mar 2016 09:45:51 +0800
+Subject: [PATCH 11/14] add interface code
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ arch/arm/configs/generic_defconfig    |   4 +
+ arch/arm/mach-generic/board-generic.c |  12 ++
+ drivers/clk/clk-generic.c             | 164 ++++++++++++++++++++++
+ drivers/misc/clk-generic.c            | 163 ++++++++++++++++++++++
+ drivers/net/ethernet/Makefile         |   5 +-
+ drivers/net/ethernet/generic_mdio.c   |  24 ++--
+ drivers/net/ethernet/generic_net.c    | 252 ++++++++++++++++++++++++++++++++++
+ drivers/net/ethernet/generic_net.h    |  13 ++
+ drivers/tty/serial/Kconfig            |   1 +
+ drivers/tty/serial/generic_serial.c   |  54 ++++----
+ 10 files changed, 652 insertions(+), 40 deletions(-)
+ create mode 100644 drivers/clk/clk-generic.c
+ create mode 100644 drivers/misc/clk-generic.c
+ create mode 100644 drivers/net/ethernet/generic_net.c
+ create mode 100644 drivers/net/ethernet/generic_net.h
+
+diff --git a/arch/arm/configs/generic_defconfig b/arch/arm/configs/generic_defconfig
+index 1d1d0fa..2e77b8f 100644
+--- a/arch/arm/configs/generic_defconfig
++++ b/arch/arm/configs/generic_defconfig
+@@ -11,3 +11,7 @@ CONFIG_NET=y
+ CONFIG_NETDEVICES=y
+ CONFIG_ETHERNET=y
+ CONFIG_NET_VENDOR_GENERIC=y
++CONFIG_CMDLINE="console=ttyO0,115200n8 root=/dev/nfs nfsroot=128.224.162.241:/var/lib/tftpboot/rootfs_ls1021,nolock rw ip=dhcp"
++CONFIG_CMDLINE_FORCE=y
++CONFIG_NFS_FS=y
++
+diff --git a/arch/arm/mach-generic/board-generic.c b/arch/arm/mach-generic/board-generic.c
+index b6a2002..a2f2665 100644
+--- a/arch/arm/mach-generic/board-generic.c
++++ b/arch/arm/mach-generic/board-generic.c
+@@ -47,6 +47,7 @@ static struct resource generic_mdio_resources[] = {
+ 		.flags	= IORESOURCE_MEM,
+ 	},
+ };
++
+ static struct platform_device generic_mdio_device = {
+ 	.name                   = "generic_mdio",
+ 	.id                     = 0,
+@@ -54,7 +55,18 @@ static struct platform_device generic_mdio_device = {
+ 	.resource	= generic_mdio_resources,
+ };
+ 
++static struct platform_device generic_net_device = {
++	.name                   = "generic_net",
++	/*
++	.id                     = 0,
++	.num_resources	= ARRAY_SIZE(generic_mdio_resources),
++	.resource	= generic_mdio_resources,
++	*/
++};
++
+ void __init board_generic_init(void)
+ {
+ 	platform_device_register(&generic_uart_device);
++	platform_device_register(&generic_mdio_device);
++	platform_device_register(&generic_net_device);
+ }
+diff --git a/drivers/clk/clk-generic.c b/drivers/clk/clk-generic.c
+new file mode 100644
+index 0000000..685b0f2
+--- /dev/null
++++ b/drivers/clk/clk-generic.c
+@@ -0,0 +1,164 @@
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++
++#include <asm/exception.h>
++#include <asm/mach/irq.h>
++#include <linux/irqdomain.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/irq.h>
++#include <asm/setup.h>
++#include <linux/time.h>
++#include <linux/clkdev.h>
++#include <linux/clk.h>
++#include <linux/sh_clk.h>
++
++#define CM_PER_L4LS_CLKSTCTRL 0x0 
++#define CM_PER_L3S_CLKSTCTRL 0x4 
++#define CM_PER_L3_CLKSTCTRL 0xC 
++#define CM_PER_CPGMAC0_CLKCTRL 0x14 
++#define CM_PER_LCDC_CLKCTRL 0x18 
++#define CM_PER_USB0_CLKCTRL 0x1C 
++#define CM_PER_TPTC0_CLKCTRL 0x24 
++#define CM_PER_EMIF_CLKCTRL 0x28 
++#define CM_PER_OCMCRAM_CLKCTRL 0x2C 
++#define CM_PER_GPMC_CLKCTRL 0x30 
++#define CM_PER_MCASP0_CLKCTRL 0x34 
++#define CM_PER_UART5_CLKCTRL 0x38 
++#define CM_PER_MMC0_CLKCTRL 0x3C 
++#define CM_PER_ELM_CLKCTRL 0x40 
++#define CM_PER_I2C2_CLKCTRL 0x44 
++#define CM_PER_I2C1_CLKCTRL 0x48 
++#define CM_PER_SPI0_CLKCTRL 0x4C 
++#define CM_PER_SPI1_CLKCTRL 0x50 
++#define CM_PER_L4LS_CLKCTRL 0x60 
++#define CM_PER_MCASP1_CLKCTRL 0x68 
++#define CM_PER_UART1_CLKCTRL 0x6C 
++#define CM_PER_UART2_CLKCTRL 0x70 
++#define CM_PER_UART3_CLKCTRL 0x74 
++#define CM_PER_UART4_CLKCTRL 0x78 
++#define CM_PER_TIMER7_CLKCTRL 0x7C 
++#define CM_PER_TIMER2_CLKCTRL 0x80 
++#define CM_PER_TIMER3_CLKCTRL 0x84 
++#define CM_PER_TIMER4_CLKCTRL 0x88 
++#define CM_PER_GPIO1_CLKCTRL 0xAC 
++#define CM_PER_GPIO2_CLKCTRL 0xB0 
++#define CM_PER_GPIO3_CLKCTRL 0xB4 
++#define CM_PER_TPCC_CLKCTRL 0xBC 
++#define CM_PER_DCAN0_CLKCTRL 0xC0 
++#define CM_PER_DCAN1_CLKCTRL 0xC4 
++#define CM_PER_EPWMSS1_CLKCTRL 0xCC 
++#define CM_PER_EPWMSS0_CLKCTRL 0xD4 
++#define CM_PER_EPWMSS2_CLKCTRL 0xD8 
++#define CM_PER_L3_INSTR_CLKCTRL 0xDC 
++#define CM_PER_L3_CLKCTRL 0xE0 
++#define CM_PER_IEEE5000_CLKCTRL 0xE4 
++#define CM_PER_PRU_ICSS_CLKCTRL 0xE8 
++#define CM_PER_TIMER5_CLKCTRL 0xEC 
++#define CM_PER_TIMER6_CLKCTRL 0xF0 
++#define CM_PER_MMC1_CLKCTRL 0xF4 
++#define CM_PER_MMC2_CLKCTRL 0xF8 
++#define CM_PER_TPTC1_CLKCTRL 0xFC 
++#define CM_PER_TPTC2_CLKCTRL 0x100 
++#define CM_PER_SPINLOCK_CLKCTRL 0x10C 
++#define CM_PER_MAILBOX0_CLKCTRL 0x110 
++#define CM_PER_L4HS_CLKSTCTRL 0x11C 
++#define CM_PER_L4HS_CLKCTRL 0x120 
++#define CM_PER_OCPWP_L3_CLKSTCT 0x12C 
++#define CM_PER_OCPWP_CLKCTRL 0x130 
++#define CM_PER_PRU_ICSS_CLKSTCTR 0x140 
++#define CM_PER_CPSW_CLKSTCTRL 0x144 
++#define CM_PER_LCDC_CLKSTCTRL 0x148 
++#define CM_PER_CLKDIV32K_CLKCTRL 0x14C 
++#define CM_PER_CLK_24MHZ_CLKSTCT 0x150 
++
++#define CLK_BASE_REG 0x44E00000
++static void __iomem *clk_base_reg;
++
++void generic_clk_dump(void __iomem *base)
++{
++printk(KERN_ERR "CM_PER_L4LS_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_L4LS_CLKSTCTRL)); 
++printk(KERN_ERR,"CM_PER_L3S_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_L3S_CLKSTCTRL));
++printk(KERN_ERR,"CM_PER_L3_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_L3_CLKSTCTRL));
++printk(KERN_ERR,"CM_PER_CPGMAC0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_CPGMAC0_CLKCTRL));
++printk(KERN_ERR,"CM_PER_LCDC_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_LCDC_CLKCTRL));
++printk(KERN_ERR,"CM_PER_USB0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_USB0_CLKCTRL));
++printk(KERN_ERR,"CM_PER_TPTC0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TPTC0_CLKCTRL));
++printk(KERN_ERR,"CM_PER_EMIF_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_EMIF_CLKCTRL));
++printk(KERN_ERR,"CM_PER_OCMCRAM_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_OCMCRAM_CLKCTRL));
++printk(KERN_ERR,"CM_PER_GPMC_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_GPMC_CLKCTRL));
++printk(KERN_ERR,"CM_PER_MCASP0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MCASP0_CLKCTRL));
++printk(KERN_ERR,"CM_PER_UART5_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_UART5_CLKCTRL));
++printk(KERN_ERR,"CM_PER_MMC0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MMC0_CLKCTRL));
++printk(KERN_ERR,"CM_PER_ELM_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_ELM_CLKCTRL));
++printk(KERN_ERR,"CM_PER_I2C2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_I2C2_CLKCTRL));
++printk(KERN_ERR,"CM_PER_I2C1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_I2C1_CLKCTRL));
++printk(KERN_ERR,"CM_PER_SPI0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_SPI0_CLKCTRL));
++printk(KERN_ERR,"CM_PER_SPI1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_SPI1_CLKCTRL));
++printk(KERN_ERR,"CM_PER_L4LS_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_L4LS_CLKCTRL));
++printk(KERN_ERR,"CM_PER_MCASP1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MCASP1_CLKCTRL));
++printk(KERN_ERR,"CM_PER_UART1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_UART1_CLKCTRL));
++printk(KERN_ERR,"CM_PER_UART2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_UART2_CLKCTRL));
++printk(KERN_ERR,"CM_PER_UART3_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_UART3_CLKCTRL));
++printk(KERN_ERR,"CM_PER_UART4_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_UART4_CLKCTRL));
++printk(KERN_ERR,"CM_PER_TIMER7_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER7_CLKCTRL));
++printk(KERN_ERR,"CM_PER_TIMER2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER2_CLKCTRL));
++printk(KERN_ERR,"CM_PER_TIMER3_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER3_CLKCTRL));
++printk(KERN_ERR,"CM_PER_TIMER4_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER4_CLKCTRL));
++printk(KERN_ERR,"CM_PER_GPIO1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_GPIO1_CLKCTRL));
++printk(KERN_ERR,"CM_PER_GPIO2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_GPIO2_CLKCTRL));
++printk(KERN_ERR,"CM_PER_GPIO3_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_GPIO3_CLKCTRL));
++printk(KERN_ERR,"CM_PER_TPCC_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TPCC_CLKCTRL));
++printk(KERN_ERR,"CM_PER_DCAN0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_DCAN0_CLKCTRL));
++printk(KERN_ERR,"CM_PER_DCAN1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_DCAN1_CLKCTRL));
++printk(KERN_ERR,"CM_PER_EPWMSS1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_EPWMSS1_CLKCTRL));
++printk(KERN_ERR,"CM_PER_EPWMSS0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_EPWMSS0_CLKCTRL));
++printk(KERN_ERR,"CM_PER_EPWMSS2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_EPWMSS2_CLKCTRL));
++printk(KERN_ERR,"CM_PER_L3_INSTR_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_L3_INSTR_CLKCTRL));
++printk(KERN_ERR,"CM_PER_L3_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_L3_CLKCTRL));
++printk(KERN_ERR,"CM_PER_IEEE5000_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_IEEE5000_CLKCTRL));
++printk(KERN_ERR,"CM_PER_PRU_ICSS_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_PRU_ICSS_CLKCTRL));
++printk(KERN_ERR,"CM_PER_TIMER5_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER5_CLKCTRL));
++printk(KERN_ERR,"CM_PER_TIMER6_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER6_CLKCTRL));
++printk(KERN_ERR,"CM_PER_MMC1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MMC1_CLKCTRL));
++printk(KERN_ERR,"CM_PER_MMC2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MMC2_CLKCTRL));
++printk(KERN_ERR,"CM_PER_TPTC1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TPTC1_CLKCTRL));
++printk(KERN_ERR,"CM_PER_TPTC2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TPTC2_CLKCTRL));
++printk(KERN_ERR,"CM_PER_SPINLOCK_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_SPINLOCK_CLKCTRL));
++printk(KERN_ERR,"CM_PER_MAILBOX0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MAILBOX0_CLKCTRL));
++printk(KERN_ERR,"CM_PER_L4HS_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_L4HS_CLKSTCTRL));
++printk(KERN_ERR,"CM_PER_L4HS_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_L4HS_CLKCTRL));
++printk(KERN_ERR,"CM_PER_OCPWP_L3_CLKSTCT:%08x\n", __raw_readl(base+CM_PER_OCPWP_L3_CLKSTCT));
++printk(KERN_ERR,"CM_PER_OCPWP_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_OCPWP_CLKCTRL));
++printk(KERN_ERR,"CM_PER_PRU_ICSS_CLKSTCTR:%08x\n", __raw_readl(base+CM_PER_PRU_ICSS_CLKSTCTR));
++printk(KERN_ERR,"CM_PER_CPSW_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_CPSW_CLKSTCTRL));
++printk(KERN_ERR,"CM_PER_LCDC_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_LCDC_CLKSTCTRL));
++printk(KERN_ERR,"CM_PER_CLKDIV32K_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_CLKDIV32K_CLKCTRL));
++printk(KERN_ERR,"CM_PER_CLK_24MHZ_CLKSTCT:%08x\n", __raw_readl(base+CM_PER_CLK_24MHZ_CLKSTCT));
++}
++
++void __init generic_clk_module_init(void)
++{
++	printk("zz %s \n", __func__);
++	return 0;
++}
++
++static void __exit generic_clk_module_exit(void)
++{
++	int ret;
++	clk_base_reg = ioremap(CLK_BASE_REG, SZ_16K);
++	printk("zz %s \n", __func__);
++	generic_clk_dump(clk_base_reg);
++}
++
++module_init(generic_clk_module_init);
++module_exit(generic_clk_module_exit);
++
++MODULE_DESCRIPTION("Altera UART driver");
++MODULE_AUTHOR("Thomas Chou <thomas@wytron.com.tw>");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("platform:" DRV_NAME);
+diff --git a/drivers/misc/clk-generic.c b/drivers/misc/clk-generic.c
+new file mode 100644
+index 0000000..3f700d1
+--- /dev/null
++++ b/drivers/misc/clk-generic.c
+@@ -0,0 +1,163 @@
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++
++#include <asm/exception.h>
++#include <asm/mach/irq.h>
++#include <linux/irqdomain.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/irq.h>
++#include <asm/setup.h>
++#include <linux/time.h>
++#include <linux/clkdev.h>
++#include <linux/clk.h>
++#include <linux/sh_clk.h>
++
++#define CM_PER_L4LS_CLKSTCTRL 0x0 
++#define CM_PER_L3S_CLKSTCTRL 0x4 
++#define CM_PER_L3_CLKSTCTRL 0xC 
++#define CM_PER_CPGMAC0_CLKCTRL 0x14 
++#define CM_PER_LCDC_CLKCTRL 0x18 
++#define CM_PER_USB0_CLKCTRL 0x1C 
++#define CM_PER_TPTC0_CLKCTRL 0x24 
++#define CM_PER_EMIF_CLKCTRL 0x28 
++#define CM_PER_OCMCRAM_CLKCTRL 0x2C 
++#define CM_PER_GPMC_CLKCTRL 0x30 
++#define CM_PER_MCASP0_CLKCTRL 0x34 
++#define CM_PER_UART5_CLKCTRL 0x38 
++#define CM_PER_MMC0_CLKCTRL 0x3C 
++#define CM_PER_ELM_CLKCTRL 0x40 
++#define CM_PER_I2C2_CLKCTRL 0x44 
++#define CM_PER_I2C1_CLKCTRL 0x48 
++#define CM_PER_SPI0_CLKCTRL 0x4C 
++#define CM_PER_SPI1_CLKCTRL 0x50 
++#define CM_PER_L4LS_CLKCTRL 0x60 
++#define CM_PER_MCASP1_CLKCTRL 0x68 
++#define CM_PER_UART1_CLKCTRL 0x6C 
++#define CM_PER_UART2_CLKCTRL 0x70 
++#define CM_PER_UART3_CLKCTRL 0x74 
++#define CM_PER_UART4_CLKCTRL 0x78 
++#define CM_PER_TIMER7_CLKCTRL 0x7C 
++#define CM_PER_TIMER2_CLKCTRL 0x80 
++#define CM_PER_TIMER3_CLKCTRL 0x84 
++#define CM_PER_TIMER4_CLKCTRL 0x88 
++#define CM_PER_GPIO1_CLKCTRL 0xAC 
++#define CM_PER_GPIO2_CLKCTRL 0xB0 
++#define CM_PER_GPIO3_CLKCTRL 0xB4 
++#define CM_PER_TPCC_CLKCTRL 0xBC 
++#define CM_PER_DCAN0_CLKCTRL 0xC0 
++#define CM_PER_DCAN1_CLKCTRL 0xC4 
++#define CM_PER_EPWMSS1_CLKCTRL 0xCC 
++#define CM_PER_EPWMSS0_CLKCTRL 0xD4 
++#define CM_PER_EPWMSS2_CLKCTRL 0xD8 
++#define CM_PER_L3_INSTR_CLKCTRL 0xDC 
++#define CM_PER_L3_CLKCTRL 0xE0 
++#define CM_PER_IEEE5000_CLKCTRL 0xE4 
++#define CM_PER_PRU_ICSS_CLKCTRL 0xE8 
++#define CM_PER_TIMER5_CLKCTRL 0xEC 
++#define CM_PER_TIMER6_CLKCTRL 0xF0 
++#define CM_PER_MMC1_CLKCTRL 0xF4 
++#define CM_PER_MMC2_CLKCTRL 0xF8 
++#define CM_PER_TPTC1_CLKCTRL 0xFC 
++#define CM_PER_TPTC2_CLKCTRL 0x100 
++#define CM_PER_SPINLOCK_CLKCTRL 0x10C 
++#define CM_PER_MAILBOX0_CLKCTRL 0x110 
++#define CM_PER_L4HS_CLKSTCTRL 0x11C 
++#define CM_PER_L4HS_CLKCTRL 0x120 
++#define CM_PER_OCPWP_L3_CLKSTCT 0x12C 
++#define CM_PER_OCPWP_CLKCTRL 0x130 
++#define CM_PER_PRU_ICSS_CLKSTCTR 0x140 
++#define CM_PER_CPSW_CLKSTCTRL 0x144 
++#define CM_PER_LCDC_CLKSTCTRL 0x148 
++#define CM_PER_CLKDIV32K_CLKCTRL 0x14C 
++#define CM_PER_CLK_24MHZ_CLKSTCT 0x150 
++
++#define CLK_BASE_REG 0x44E00000
++static void __iomem *clk_base_reg;
++
++void generic_clk_dump(void __iomem *base)
++{
++printk(KERN_ERR "CM_PER_L4LS_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_L4LS_CLKSTCTRL)); 
++printk(KERN_ERR "CM_PER_L3S_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_L3S_CLKSTCTRL));
++printk(KERN_ERR"CM_PER_L3_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_L3_CLKSTCTRL));
++printk(KERN_ERR "CM_PER_CPGMAC0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_CPGMAC0_CLKCTRL));
++printk(KERN_ERR "CM_PER_LCDC_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_LCDC_CLKCTRL));
++printk(KERN_ERR "CM_PER_USB0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_USB0_CLKCTRL));
++printk(KERN_ERR "CM_PER_TPTC0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TPTC0_CLKCTRL));
++printk(KERN_ERR "CM_PER_EMIF_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_EMIF_CLKCTRL));
++printk(KERN_ERR "CM_PER_OCMCRAM_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_OCMCRAM_CLKCTRL));
++printk(KERN_ERR "CM_PER_GPMC_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_GPMC_CLKCTRL));
++printk(KERN_ERR "CM_PER_MCASP0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MCASP0_CLKCTRL));
++printk(KERN_ERR "CM_PER_UART5_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_UART5_CLKCTRL));
++printk(KERN_ERR "CM_PER_MMC0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MMC0_CLKCTRL));
++printk(KERN_ERR "CM_PER_ELM_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_ELM_CLKCTRL));
++printk(KERN_ERR "CM_PER_I2C2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_I2C2_CLKCTRL));
++printk(KERN_ERR "CM_PER_I2C1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_I2C1_CLKCTRL));
++printk(KERN_ERR "CM_PER_SPI0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_SPI0_CLKCTRL));
++printk(KERN_ERR "CM_PER_SPI1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_SPI1_CLKCTRL));
++printk(KERN_ERR "CM_PER_L4LS_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_L4LS_CLKCTRL));
++printk(KERN_ERR "CM_PER_MCASP1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MCASP1_CLKCTRL));
++printk(KERN_ERR "CM_PER_UART1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_UART1_CLKCTRL));
++printk(KERN_ERR "CM_PER_UART2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_UART2_CLKCTRL));
++printk(KERN_ERR "CM_PER_UART3_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_UART3_CLKCTRL));
++printk(KERN_ERR "CM_PER_UART4_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_UART4_CLKCTRL));
++printk(KERN_ERR "CM_PER_TIMER7_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER7_CLKCTRL));
++printk(KERN_ERR "CM_PER_TIMER2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER2_CLKCTRL));
++printk(KERN_ERR "CM_PER_TIMER3_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER3_CLKCTRL));
++printk(KERN_ERR "CM_PER_TIMER4_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER4_CLKCTRL));
++printk(KERN_ERR "CM_PER_GPIO1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_GPIO1_CLKCTRL));
++printk(KERN_ERR "CM_PER_GPIO2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_GPIO2_CLKCTRL));
++printk(KERN_ERR "CM_PER_GPIO3_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_GPIO3_CLKCTRL));
++printk(KERN_ERR "CM_PER_TPCC_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TPCC_CLKCTRL));
++printk(KERN_ERR "CM_PER_DCAN0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_DCAN0_CLKCTRL));
++printk(KERN_ERR "CM_PER_DCAN1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_DCAN1_CLKCTRL));
++printk(KERN_ERR "CM_PER_EPWMSS1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_EPWMSS1_CLKCTRL));
++printk(KERN_ERR "CM_PER_EPWMSS0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_EPWMSS0_CLKCTRL));
++printk(KERN_ERR "CM_PER_EPWMSS2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_EPWMSS2_CLKCTRL));
++printk(KERN_ERR "CM_PER_L3_INSTR_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_L3_INSTR_CLKCTRL));
++printk(KERN_ERR "CM_PER_L3_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_L3_CLKCTRL));
++printk(KERN_ERR "CM_PER_IEEE5000_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_IEEE5000_CLKCTRL));
++printk(KERN_ERR "CM_PER_PRU_ICSS_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_PRU_ICSS_CLKCTRL));
++printk(KERN_ERR "CM_PER_TIMER5_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER5_CLKCTRL));
++printk(KERN_ERR "CM_PER_TIMER6_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TIMER6_CLKCTRL));
++printk(KERN_ERR "CM_PER_MMC1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MMC1_CLKCTRL));
++printk(KERN_ERR "CM_PER_MMC2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MMC2_CLKCTRL));
++printk(KERN_ERR "CM_PER_TPTC1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TPTC1_CLKCTRL));
++printk(KERN_ERR "CM_PER_TPTC2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TPTC2_CLKCTRL));
++printk(KERN_ERR "CM_PER_SPINLOCK_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_SPINLOCK_CLKCTRL));
++printk(KERN_ERR "CM_PER_MAILBOX0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MAILBOX0_CLKCTRL));
++printk(KERN_ERR "CM_PER_L4HS_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_L4HS_CLKSTCTRL));
++printk(KERN_ERR "CM_PER_L4HS_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_L4HS_CLKCTRL));
++printk(KERN_ERR "CM_PER_OCPWP_L3_CLKSTCT:%08x\n", __raw_readl(base+CM_PER_OCPWP_L3_CLKSTCT));
++printk(KERN_ERR "CM_PER_OCPWP_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_OCPWP_CLKCTRL));
++printk(KERN_ERR "CM_PER_PRU_ICSS_CLKSTCTR:%08x\n", __raw_readl(base+CM_PER_PRU_ICSS_CLKSTCTR));
++printk(KERN_ERR "CM_PER_CPSW_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_CPSW_CLKSTCTRL));
++printk(KERN_ERR "CM_PER_LCDC_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_LCDC_CLKSTCTRL));
++printk(KERN_ERR "CM_PER_CLKDIV32K_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_CLKDIV32K_CLKCTRL));
++printk(KERN_ERR "CM_PER_CLK_24MHZ_CLKSTCT:%08x\n", __raw_readl(base+CM_PER_CLK_24MHZ_CLKSTCT));
++}
++
++void __init generic_clk_module_init(void)
++{
++	printk("zz %s \n", __func__);
++	clk_base_reg = ioremap(CLK_BASE_REG, SZ_16K);
++	generic_clk_dump(clk_base_reg);
++	return 0;
++}
++
++static void __exit generic_clk_module_exit(void)
++{
++	printk("zz %s \n", __func__);
++}
++
++module_init(generic_clk_module_init);
++module_exit(generic_clk_module_exit);
++
++MODULE_DESCRIPTION("Altera UART driver");
++MODULE_AUTHOR("Thomas Chou <thomas@wytron.com.tw>");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("platform:" DRV_NAME);
+diff --git a/drivers/net/ethernet/Makefile b/drivers/net/ethernet/Makefile
+index 0356666..c489bd4 100644
+--- a/drivers/net/ethernet/Makefile
++++ b/drivers/net/ethernet/Makefile
+@@ -77,6 +77,7 @@ obj-$(CONFIG_NET_VENDOR_VIA) += via/
+ obj-$(CONFIG_NET_VENDOR_WIZNET) += wiznet/
+ obj-$(CONFIG_NET_VENDOR_XILINX) += xilinx/
+ obj-$(CONFIG_NET_VENDOR_XIRCOM) += xircom/
+-obj-$(CONFIG_NET_VENDOR_GENERIC) 	+= generic_net.o
++#obj-$(CONFIG_NET_VENDOR_GENERIC) 	+= generic_net.o
+ #obj-$(CONFIG_NET_VENDOR_GENERIC_MDIO) 	+= generic_mdio.o
+-obj-y += generic_mdio.o
++obj-y 							+= generic_mdio.o
++obj-y 							+= generic_net.o
+diff --git a/drivers/net/ethernet/generic_mdio.c b/drivers/net/ethernet/generic_mdio.c
+index a933cbb..da1c067 100644
+--- a/drivers/net/ethernet/generic_mdio.c
++++ b/drivers/net/ethernet/generic_mdio.c
+@@ -13,6 +13,7 @@
+ #include <linux/of.h>
+ #include <linux/of_device.h>
+ #include <linux/pinctrl/consumer.h>
++#include "generic_net.h"
+ 
+ /*
+  * This timeout definition is a worst-case ultra defensive measure against
+@@ -56,14 +57,8 @@ struct generic_mdio_regs {
+ 	}	user[0];
+ };
+ 
+-struct generic_mdio_data {
+-	struct mii_bus *bus;
+-	struct generic_mdio_regs __iomem *regs;
+-	spinlock_t	lock;
+-	struct device *dev;
+-	unsigned long	access_time; /* jiffies */
+-};
+ 
++struct generic_mdio_data *gen_mdio_data;
+ /* wait until hardware is ready for another user access */
+ static inline int wait_for_user_access(struct generic_mdio_data *data)
+ {
+@@ -222,6 +217,7 @@ static int generic_mdio_probe(struct platform_device *pdev)
+ 	struct phy_device *phy;
+ 	int ret, addr;
+ 
++	printk("zz %s \n", __func__);
+ 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+ 	if (!res) {
+ 		dev_err(&pdev->dev, "no mem resource\n");
+@@ -237,6 +233,7 @@ static int generic_mdio_probe(struct platform_device *pdev)
+ 		ret = -EIO; 
+ 		goto  out2;
+ 	}
++
+ 	data->bus = mdiobus_alloc();
+ 	if (!data->bus) {
+ 		dev_err(&pdev->dev, "failed to alloc mii bus\n");
+@@ -244,12 +241,15 @@ static int generic_mdio_probe(struct platform_device *pdev)
+ 		goto out2;
+ 	}
+ 
+-	data->bus->name		= dev_name(&pdev->dev);
+-	data->bus->read		= generic_mdio_read,
+-	data->bus->write	= generic_mdio_write,
+-	data->bus->reset	= generic_mdio_reset,
++	//data->bus->name		= dev_name(&pdev->dev);
++	data->bus->name		= "gen_mdio_bus";
++	data->bus->read		= generic_mdio_read;
++	data->bus->write	= generic_mdio_write;
++	data->bus->reset	= generic_mdio_reset;
+ 	data->bus->parent	= &pdev->dev;
+ 	data->bus->priv		= data;
++	snprintf(data->bus->id, MII_BUS_ID_SIZE, "%s-mii",
++			 		dev_name(&pdev->dev));
+ 
+ 	dev_set_drvdata(&pdev->dev, data);
+ 	data->dev = &pdev->dev;
+@@ -266,6 +266,8 @@ static int generic_mdio_probe(struct platform_device *pdev)
+ 				 phy->drv ? phy->drv->name : "unknown");
+ 		}
+ 	}
++
++	gen_mdio_data = data;
+ 	return 0;
+ out1:
+ 	return -EIO;
+diff --git a/drivers/net/ethernet/generic_net.c b/drivers/net/ethernet/generic_net.c
+new file mode 100644
+index 0000000..40bc161
+--- /dev/null
++++ b/drivers/net/ethernet/generic_net.c
+@@ -0,0 +1,252 @@
++#include <linux/kernel.h>
++#include <linux/io.h>
++#include <linux/clk.h>
++#include <linux/timer.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/irqreturn.h>
++#include <linux/interrupt.h>
++#include <linux/if_ether.h>
++#include <linux/etherdevice.h>
++#include <linux/netdevice.h>
++#include <linux/net_tstamp.h>
++#include <linux/phy.h>
++#include <linux/workqueue.h>
++#include <linux/delay.h>
++#include <linux/pm_runtime.h>
++#include <linux/of.h>
++#include <linux/of_net.h>
++#include <linux/of_device.h>
++#include <linux/if_vlan.h>
++#include <linux/net_switch_config.h>
++#include <linux/pinctrl/consumer.h>
++
++#include "generic_net.h"
++
++struct gen_net_data {
++	struct phy_device *phydev;
++};
++
++static void gen_phy_adjust_link(struct net_device *dev)
++{
++	printk("zz %s \n", __func__);
++}
++
++static int cpsw_ndo_open(struct net_device *ndev)
++{
++	struct phy_device *phydev = NULL;
++	int ret;
++
++	/* find the first phy */
++	phydev = phy_find_first(gen_mdio_data->bus);
++	if (!phydev) {
++		netdev_err(ndev, "no PHY found\n");
++		return -ENODEV;
++	}
++
++	ret = phy_connect_direct(ndev, phydev, &gen_phy_adjust_link,
++		PHY_INTERFACE_MODE_RGMII_TXID);
++
++	if (ret) {
++		netdev_err(ndev, "Could not attach to PHY\n");
++		return ret;
++	}
++
++	pdata->phy_dev = phydev;
++	return 0;
++}
++
++static int cpsw_ndo_stop(struct net_device *ndev)
++{
++	printk("zz %s \n", __func__);
++	return 0;
++}
++
++static int cpsw_ndo_start_xmit (struct sk_buff *skb,
++						   struct net_device *dev)
++{
++	printk("zz %s \n", __func__);
++	return 0;
++}
++
++static int generic_ndo_set_mac_address(struct net_device *ndev,
++						       void *addr)
++{
++	printk("zz %s \n", __func__);
++	return 0;
++}
++
++static int cpsw_ndo_ioctl(struct net_device *dev,
++					        struct ifreq *ifr, int cmd)
++{
++	printk("zz %s \n", __func__);
++	return 0;
++}
++
++/*
++static int eth_change_mtu(struct net_device *ndev)
++{
++	printk("zz %s \n", __func__);
++	return 0;
++}
++*/
++
++static void cpsw_ndo_tx_timeout(struct net_device *ndev)
++{
++	printk("zz %s \n", __func__);
++}
++
++static void cpsw_ndo_set_rx_mode(struct net_device *ndev)
++{
++	printk("zz %s \n", __func__);
++
++}
++
++static void cpsw_ndo_poll_controller(struct net_device *ndev)
++{
++	printk("zz %s \n", __func__);
++
++}
++
++static int cpsw_ndo_vlan_rx_add_vid(struct net_device *ndev,
++						       __be16 proto, u16 vid)
++{
++	printk("zz %s \n", __func__);
++	return 0;
++}
++
++static int cpsw_ndo_vlan_rx_kill_vid(struct net_device *ndev,
++				     __be16 proto, u16 vid)
++{
++	printk("zz %s \n", __func__);
++	return 0;
++}
++
++static const struct net_device_ops cpsw_netdev_ops = {
++	.ndo_open		= cpsw_ndo_open,
++	.ndo_stop		= cpsw_ndo_stop,
++	.ndo_start_xmit		= cpsw_ndo_start_xmit,
++	.ndo_set_mac_address	= generic_ndo_set_mac_address,
++	.ndo_do_ioctl		= cpsw_ndo_ioctl,
++	.ndo_validate_addr	= eth_validate_addr,
++	//.ndo_change_mtu		= eth_change_mtu,
++	.ndo_tx_timeout		= cpsw_ndo_tx_timeout,
++	.ndo_set_rx_mode	= cpsw_ndo_set_rx_mode,
++	.ndo_poll_controller	= cpsw_ndo_poll_controller,
++	.ndo_vlan_rx_add_vid	= cpsw_ndo_vlan_rx_add_vid,
++	.ndo_vlan_rx_kill_vid	= cpsw_ndo_vlan_rx_kill_vid,
++};
++
++u32	gen_get_link(struct net_device *netdev)
++{
++	return 0;
++}
++
++int	gen_get_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
++{
++	return 0;
++}
++
++int	gen_set_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
++{
++	return 0;
++}
++
++int	gen_get_coalesce(struct net_device *netdev, struct ethtool_coalesce *cmd)
++{
++	return 0;
++}
++
++int	gen_set_coalesce(struct net_device *netdev, struct ethtool_coalesce *cls)
++{
++	return 0;
++}
++
++void gen_get_drvinfo(struct net_device *netdev, struct ethtool_drvinfo *info)
++{
++}
++
++void gen_get_ringparam(struct net_device *netdev,
++			 struct ethtool_ringparam *pra)
++{
++}
++
++int	gen_set_ringparam(struct net_device *netdev,
++			 struct ethtool_ringparam *pra)
++{
++	return 0;
++}
++
++const struct ethtool_ops generic_netdev_tool = {
++	.get_link       = ethtool_op_get_link,
++	.get_settings   = gen_get_settings,
++	.set_settings   = gen_set_settings,
++	.set_coalesce   = gen_set_coalesce,
++	.get_coalesce   = gen_get_coalesce,
++	.get_drvinfo    = gen_get_drvinfo,
++	.get_ringparam  = gen_get_ringparam,
++	.set_ringparam  = gen_set_ringparam,
++};
++
++static int generic_net_probe(struct platform_device *pdev)
++{
++	struct net_device		*ndev;
++	int ret;
++
++	ndev = alloc_etherdev(sizeof(struct net_device));
++	if (!ndev) {
++		dev_err(&pdev->dev, "error allocating net_device\n");
++		return -ENOMEM;
++	}
++
++	ndev->netdev_ops = &cpsw_netdev_ops;
++	//netif_napi_add(ndev, &priv->napi, cpsw_poll, CPSW_POLL_WEIGHT);
++	//netif_napi_add(ndev, &priv->napi_tx, cpsw_tx_poll, CPSW_POLL_WEIGHT);
++	/* register the network device */
++	SET_NETDEV_DEV(ndev, &pdev->dev);
++	ndev->ethtool_ops = &generic_netdev_tool;
++	eth_hw_addr_random(ndev);
++
++	ret = register_netdev(ndev);
++
++	if (ret) {
++		dev_err(&pdev->dev, "error registering net device\n");
++		return -ENODEV;
++	}
++
++	printk("zz %s register netdev\n", __func__);
++	return 0;
++}
++
++static int generic_net_remove(struct platform_device *pdev)
++{
++	return 0;
++}
++
++static struct platform_driver generic_driver = {
++	.driver = {
++		.name	 = "generic_net",
++		.owner	 = THIS_MODULE,
++		//.pm	 = &cpsw_pm_ops,
++		//.of_match_table = cpsw_of_mtable,
++	},
++	.probe = generic_net_probe,
++	.remove = generic_net_remove,
++};
++
++static int __init generic_net_init(void)
++{
++	return platform_driver_register(&generic_driver);
++}
++module_init(generic_net_init);
++
++static void __exit generic_net_exit(void)
++{
++	platform_driver_unregister(&generic_driver);
++}
++module_exit(generic_net_exit);
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Cyril Chemparathy <cyril@ti.com>");
++MODULE_AUTHOR("Mugunthan V N <mugunthanvnm@ti.com>");
++MODULE_DESCRIPTION("TI CPSW Ethernet driver");
+diff --git a/drivers/net/ethernet/generic_net.h b/drivers/net/ethernet/generic_net.h
+new file mode 100644
+index 0000000..ad788dc
+--- /dev/null
++++ b/drivers/net/ethernet/generic_net.h
+@@ -0,0 +1,13 @@
++#ifndef _GENERIC_NET_H_
++#define _GENERIC_NET_H_
++
++struct generic_mdio_data {
++	struct mii_bus *bus;
++	struct generic_mdio_regs __iomem *regs;
++	spinlock_t	lock;
++	struct device *dev;
++	unsigned long	access_time; /* jiffies */
++};
++
++extern struct generic_mdio_data *gen_mdio_data;
++#endif
+diff --git a/drivers/tty/serial/Kconfig b/drivers/tty/serial/Kconfig
+index dc0b78d..356439e 100644
+--- a/drivers/tty/serial/Kconfig
++++ b/drivers/tty/serial/Kconfig
+@@ -1510,6 +1510,7 @@ config SERIAL_ST_ASC_CONSOLE
+ config SERIAL_GENERIC
+ 	bool "Support for console on ST ASC"
+ 	depends on ARCH_GENERIC=y
++	select SERIAL_CORE
+ 	select SERIAL_CORE_CONSOLE
+ endmenu
+ 
+diff --git a/drivers/tty/serial/generic_serial.c b/drivers/tty/serial/generic_serial.c
+index a828ea4..3130b24 100644
+--- a/drivers/tty/serial/generic_serial.c
++++ b/drivers/tty/serial/generic_serial.c
+@@ -115,7 +115,7 @@ static int __init generic_uart_console_setup(struct console *co, char *options)
+ 	int bits = 8;
+ 	int parity = 'n';
+ 	int flow = 'n';
+-	early_print("%s \n", __func__, &generic_uart_ports);
++	//early_print("%s \n", __func__, &generic_uart_ports);
+ 	uart_parse_options(options, &baud, &parity, &bits, &flow);
+ 	return uart_set_options(&generic_uart_ports.port, co, baud, parity, bits, flow);
+ }
+@@ -142,7 +142,7 @@ static struct console generic_uart_console = {
+ 
+ static int __init generic_uart_console_init(void)
+ {
+-	early_print("zz %s \n", __func__);
++	//early_print("zz %s \n", __func__);
+ 	register_console(&generic_uart_console);
+ 	return 0;
+ }
+@@ -150,7 +150,7 @@ static int __init generic_uart_console_init(void)
+ 
+ static unsigned int generic_uart_tx_empty(struct uart_port *port)
+ {
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ 	return 0;
+ }
+ 
+@@ -158,7 +158,7 @@ static unsigned int generic_uart_get_mctrl(struct uart_port *port)
+ {
+ 	struct generic_uart *pp = container_of(port, struct generic_uart, port);
+ 	unsigned int sigs;
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ 	sigs |= (pp->sigs & TIOCM_RTS);
+ 	return sigs;
+ }
+@@ -166,7 +166,7 @@ static unsigned int generic_uart_get_mctrl(struct uart_port *port)
+ static void generic_uart_set_mctrl(struct uart_port *port, unsigned int sigs)
+ {
+ 	struct generic_uart *pp = container_of(port, struct generic_uart, port);
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ 	pp->sigs = sigs;
+ 	if (sigs & TIOCM_RTS)
+ 		pp->imr |= 0;
+@@ -176,22 +176,22 @@ static void generic_uart_set_mctrl(struct uart_port *port, unsigned int sigs)
+ 
+ static void generic_uart_start_tx(struct uart_port *port)
+ {
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ }
+ 
+ static void generic_uart_stop_tx(struct uart_port *port)
+ {
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ }
+ 
+ static void generic_uart_stop_rx(struct uart_port *port)
+ {
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ }
+ 
+ static void generic_uart_break_ctl(struct uart_port *port, int break_state)
+ {
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ }
+ 
+ static void generic_uart_set_termios(struct uart_port *port,
+@@ -227,7 +227,7 @@ static void generic_uart_set_termios(struct uart_port *port,
+ 		cval |= UART_LCR_EPAR;
+ 	if (termios->c_cflag & CMSPAR)
+ 		cval |= UART_LCR_SPAR;
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ 
+ 	baud = 115200;
+ 	/*
+@@ -238,25 +238,25 @@ static void generic_uart_set_termios(struct uart_port *port,
+ 
+ static void generic_uart_rx_chars(struct generic_uart *pp)
+ {
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ }
+ 
+ static void generic_uart_tx_chars(struct generic_uart *pp)
+ {
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ 
+ }
+ 
+ static irqreturn_t generic_uart_interrupt(int irq, void *data)
+ {
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ 
+ 	return IRQ_HANDLED;
+ }
+ 
+ static void generic_uart_timer(unsigned long data)
+ {
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ }
+ 
+ static void generic_uart_config_port(struct uart_port *port, int flags)
+@@ -264,12 +264,12 @@ static void generic_uart_config_port(struct uart_port *port, int flags)
+ 	struct generic_uart *up = container_of(port, struct generic_uart, port);
+ 	up->port.type = PORT_ALTERA_UART;
+ 	up->port.flags |= UPF_SOFT_FLOW | UPF_HARD_FLOW;
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ }
+ 
+ static int generic_uart_startup(struct uart_port *port)
+ {
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ 	return 0;
+ }
+ 
+@@ -280,39 +280,39 @@ static void generic_uart_shutdown(struct uart_port *port)
+ 
+ static const char *generic_uart_type(struct uart_port *port)
+ {
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ 	return "Generic UART";
+ }
+ 
+ static int generic_uart_request_port(struct uart_port *port)
+ {
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ 	return 0;
+ }
+ 
+ static void generic_uart_release_port(struct uart_port *port)
+ {
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ 
+ }
+ 
+ static int generic_uart_verify_port(struct uart_port *port,
+ 				   struct serial_struct *ser)
+ {
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ 	return 0;
+ }
+ 
+ #ifdef CONFIG_CONSOLE_POLL
+ static int generic_uart_poll_get_char(struct uart_port *port)
+ {
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ 	return 0;
+ }
+ 
+ static void generic_uart_poll_put_char(struct uart_port *port, unsigned char c)
+ {
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ }
+ #endif
+ 
+@@ -344,7 +344,7 @@ static int generic_uart_probe(struct platform_device *pdev)
+ 	struct resource *res_mem;
+ 	struct resource *res_irq;
+ 
+-	early_print("zz %s \n", __func__);
++	//early_print("zz %s \n", __func__);
+ 
+ 	port = &generic_uart_ports.port;
+ 	res_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+@@ -380,7 +380,7 @@ static int generic_uart_probe(struct platform_device *pdev)
+ 
+ static int generic_uart_remove(struct platform_device *pdev)
+ {
+-	early_print("zz %s \n", __func__);
++	//early_print("zz %s \n", __func__);
+ 	return 0;
+ }
+ 
+@@ -394,16 +394,16 @@ static struct platform_driver generic_uart_platform_driver = {
+ 
+ static int __init generic_uart_init(void)
+ {
+-	early_print("%s +\n", __func__);
++	//early_print("%s +\n", __func__);
+ 	uart_register_driver(&generic_uart_driver);
+ 	platform_driver_register(&generic_uart_platform_driver);
+-	early_print("%s -\n", __func__);
++	//early_print("%s -\n", __func__);
+ 	return 0;
+ }
+ 
+ static void __exit generic_uart_exit(void)
+ {
+-	early_print("%s \n", __func__);
++	//early_print("%s \n", __func__);
+ 	platform_driver_unregister(&generic_uart_platform_driver);
+ }
+ 
+-- 
+1.9.1
+

@@ -1,0 +1,303 @@
+From bcc423297d29ebaf0502f43aa5f0e527d4fb89d5 Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Mon, 29 Feb 2016 14:58:33 +0800
+Subject: [PATCH 06/14] clockevent: add generic clkevnet and tick support
+
+For booting, kernel need a tick increase to count ther timer and
+jiffies, otherwise booting will be blocked in schecd.
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ arch/arm/mach-generic/clk.c   |  34 ++++++---
+ arch/arm/mach-generic/clk.h   |   6 ++
+ arch/arm/mach-generic/timer.c | 162 +++++++++++++++++++++++++++++++-----------
+ 3 files changed, 149 insertions(+), 53 deletions(-)
+ create mode 100644 arch/arm/mach-generic/clk.h
+
+diff --git a/arch/arm/mach-generic/clk.c b/arch/arm/mach-generic/clk.c
+index 178fc75..a760b6f 100644
+--- a/arch/arm/mach-generic/clk.c
++++ b/arch/arm/mach-generic/clk.c
+@@ -13,6 +13,9 @@
+ #include <linux/irq.h>
+ #include <asm/setup.h>
+ #include <linux/time.h>
++#include <linux/clkdev.h>
++#include <linux/clk.h>
++#include <linux/sh_clk.h>
+ #include "plat.h"
+ 
+ #define CM_PER_L4LS_CLKSTCTRL 0x0 
+@@ -127,21 +130,30 @@ early_print("CM_PER_MMC2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MMC2_CLKCTRL))
+ early_print("CM_PER_TPTC1_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TPTC1_CLKCTRL));  
+ early_print("CM_PER_TPTC2_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_TPTC2_CLKCTRL));  
+ early_print("CM_PER_SPINLOCK_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_SPINLOCK_CLKCTRL));  
+-early_print("CM_PER_MAILBOX0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MAILBOX0_CLKCTRL));  
+-early_print("CM_PER_L4HS_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_L4HS_CLKSTCTRL));  
+-early_print("CM_PER_L4HS_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_L4HS_CLKCTRL));  
+-early_print("CM_PER_OCPWP_L3_CLKSTCT:%08x\n", __raw_readl(base+CM_PER_OCPWP_L3_CLKSTCT));  
+-early_print("CM_PER_OCPWP_CLKCTRL:%08x\n", __raw_readl(CM_PER_OCPWP_CLKCTRL));  
+-early_print("CM_PER_PRU_ICSS_CLKSTCTR:%08x\n", __raw_readl(base+CM_PER_PRU_ICSS_CLKSTCTR));  
+-early_print("CM_PER_CPSW_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_CPSW_CLKSTCTRL));  
+-early_print("CM_PER_LCDC_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_LCDC_CLKSTCTRL));  
+-early_print("CM_PER_CLKDIV32K_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_CLKDIV32K_CLKCTRL));  
+-early_print("CM_PER_CLK_24MHZ_CLKSTCT:%08x\n", __raw_readl(base+CM_PER_CLK_24MHZ_CLKSTCT));  
++early_print("CM_PER_MAILBOX0_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_MAILBOX0_CLKCTRL));
++early_print("CM_PER_L4HS_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_L4HS_CLKSTCTRL));
++early_print("CM_PER_L4HS_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_L4HS_CLKCTRL));
++early_print("CM_PER_OCPWP_L3_CLKSTCT:%08x\n", __raw_readl(base+CM_PER_OCPWP_L3_CLKSTCT));
++early_print("CM_PER_OCPWP_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_OCPWP_CLKCTRL));
++early_print("CM_PER_PRU_ICSS_CLKSTCTR:%08x\n", __raw_readl(base+CM_PER_PRU_ICSS_CLKSTCTR));
++early_print("CM_PER_CPSW_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_CPSW_CLKSTCTRL));
++early_print("CM_PER_LCDC_CLKSTCTRL:%08x\n", __raw_readl(base+CM_PER_LCDC_CLKSTCTRL));
++early_print("CM_PER_CLKDIV32K_CLKCTRL:%08x\n", __raw_readl(base+CM_PER_CLKDIV32K_CLKCTRL));
++early_print("CM_PER_CLK_24MHZ_CLKSTCT:%08x\n", __raw_readl(base+CM_PER_CLK_24MHZ_CLKSTCT));
+ 
+ }
+ 
++struct clk clk_dm_timer0 = {
++	.rate = 115200,
++};
++
+ void generic_clk_init(void)
+ {
++	int ret;
+ 	clk_base_reg = ioremap(CLK_BASE_REG, SZ_16K);
+-	clk_dump(clk_base_reg);
++	ret = clk_register_clkdev(&clk_dm_timer0, "dmtimer", "dmtimer.0");
++	if (ret) {
++		early_print("register dm_timer0 failed\n");
++	}
++	//clk_dump(clk_base_reg);
+ }
+diff --git a/arch/arm/mach-generic/clk.h b/arch/arm/mach-generic/clk.h
+new file mode 100644
+index 0000000..d13d7de
+--- /dev/null
++++ b/arch/arm/mach-generic/clk.h
+@@ -0,0 +1,6 @@
++#ifndef _GENERIC_CLK_
++#define _GENERIC_CLK_
++
++
++void generic_timer_init(void);
++#endif
+diff --git a/arch/arm/mach-generic/timer.c b/arch/arm/mach-generic/timer.c
+index 8a143a0..f0d4b3d 100644
+--- a/arch/arm/mach-generic/timer.c
++++ b/arch/arm/mach-generic/timer.c
+@@ -3,6 +3,7 @@
+ #include <linux/init.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
++#include <linux/clockchips.h>
+ 
+ #include <asm/exception.h>
+ #include <asm/mach/irq.h>
+@@ -13,7 +14,13 @@
+ #include <linux/irq.h>
+ #include <asm/setup.h>
+ #include <linux/time.h>
++#include <linux/clkdev.h>
++#include <linux/clk.h>
++#include <linux/sh_clk.h>
+ #include "plat.h"
++#include "clk.h"
++
++static irqreturn_t omap2_gp_timer_interrupt(int irq, void *dev_id);
+ 
+ #define DMTIMER0_REG_BASE 0x44E05000
+ 
+@@ -35,15 +42,32 @@
+ #define TSICR  0x54
+ #define TCAR2  0x58
+ 
+-static void __iomem *dmt_base_reg;
+-static irqreturn_t omap2_gp_timer_interrupt(int irq, void *dev_id)
+-{
+-	//struct clock_event_device *evt = &clockevent_gpt;
++#define	  DMT_IRQ_OVF		  (1 << 1)	/* IRQ: Overflow */
++#define	  DMT_TSICR_RESET	  (1 << 1)	/* TSICR perform soft reset */
++#define	  DMT_TIOCP_RESET	  (1 << 0)	/* TIOCP perform soft reset */
++#define	  DMT_TCLR_START	  (1 << 0)	/* Start timer */
++#define	  DMT_TCLR_AUTOLOAD	  (1 << 1)	/* Auto-reload on overflow */
++#define	  DMT_TCLR_PRES_MASK	  (7 << 2)	/* Prescaler mask */
++#define	  DMT_TCLR_PRES_ENABLE	  (1 << 5)	/* Prescaler enable */
++#define	  DMT_TCLR_COMP_ENABLE	  (1 << 6)	/* Compare enable */
++#define	  DMT_TCLR_PWM_HIGH	  (1 << 7)	/* PWM default output high */
++#define	  DMT_TCLR_CAPTRAN_MASK	  (3 << 8)	/* Capture transition mask */
++#define	  DMT_TCLR_CAPTRAN_NONE	  (0 << 8)	/* Capture: none */
++#define	  DMT_TCLR_CAPTRAN_LOHI	  (1 << 8)	/* Capture lo->hi transition */
++#define	  DMT_TCLR_CAPTRAN_HILO	  (2 << 8)	/* Capture hi->lo transition */
++#define	  DMT_TCLR_CAPTRAN_BOTH	  (3 << 8)	/* Capture both transitions */
++#define	  DMT_TCLR_TRGMODE_MASK	  (3 << 10)	/* Trigger output mode mask */
++#define	  DMT_TCLR_TRGMODE_NONE	  (0 << 10)	/* Trigger off */
++#define	  DMT_TCLR_TRGMODE_OVFL	  (1 << 10)	/* Trigger on overflow */
++#define	  DMT_TCLR_TRGMODE_BOTH	  (2 << 10)	/* Trigger on match + ovflow */
++#define	  DMT_TCLR_PWM_PTOGGLE	  (1 << 12)	/* PWM toggles */
++#define	  DMT_TCLR_CAP_MODE_2ND	  (1 << 13)	/* Capture second event mode */
++#define	  DMT_TCLR_GPO_CFG	  (1 << 14)	/* (no descr in datasheet) */
+ 
+-	//__omap_dm_timer_write_status(&clkev, OMAP_TIMER_INT_OVERFLOW);
+-	//evt->event_handler(evt);
+-	return IRQ_HANDLED;
+-}
++static void generic_set_mode(enum clock_event_mode mode, struct clock_event_device *evt);
++static int generic_set_next_event(unsigned long evt, struct clock_event_device *unused);
++
++static void __iomem *dmt_base_reg;
+ 
+ static struct irqaction omap2_gp_timer_irq = {
+ 	.name		= "gp_timer",
+@@ -51,27 +75,54 @@ static struct irqaction omap2_gp_timer_irq = {
+ 	.handler	= omap2_gp_timer_interrupt,
+ };
+ 
++static struct clock_event_device clockevent_generic = {
++	.name       = "generic_timer",
++	.features   = CLOCK_EVT_FEAT_ONESHOT,
++	.set_mode   = generic_set_mode,
++	.set_next_event = generic_set_next_event,
++	.rating     = 200,
++};
+ 
+-void timer_dump(void __iomem *base)
++
++static void generic_set_mode(enum clock_event_mode mode, struct clock_event_device *evt)
++{
++}
++
++static int generic_set_next_event(unsigned long evt, struct clock_event_device *unused)
+ {
+-early_print("TIDR:%08x\n",__raw_readl(base+TIDR));  
+-early_print("TIOCP_CFG :%08x\n",__raw_readl(base+TIOCP_CFG ));  
+-early_print("IRQ_EOI :%08x\n",__raw_readl(base+IRQ_EOI ));  
+-early_print("IRQSTATUS_RAW :%08x\n",__raw_readl(base+IRQSTATUS_RAW ));  
+-early_print("IRQSTATUS :%08x\n",__raw_readl(base+IRQSTATUS ));  
+-early_print("IRQENABLE_SET :%08x\n",__raw_readl(base+IRQENABLE_SET ));  
+-early_print("IRQENABLE_CLR :%08x\n",__raw_readl(base+IRQENABLE_CLR ));  
+-early_print("IRQWAKEEN :%08x\n",__raw_readl(base+IRQWAKEEN ));  
+-early_print("TCLR :%08x\n",__raw_readl(base+TCLR ));  
+-early_print("TCRR :%08x\n",__raw_readl(base+TCRR ));  
+-early_print("TLDR :%08x\n",__raw_readl(base+TLDR ));  
+-early_print("TTGR :%08x\n",__raw_readl(base+TTGR ));  
+-early_print("TWPS :%08x\n",__raw_readl(base+TWPS ));  
+-early_print("TMAR :%08x\n",__raw_readl(base+TMAR ));  
+-early_print("TCAR1 :%08x\n",__raw_readl(base+TCAR1 ));  
+-early_print("TSICR :%08x\n",__raw_readl(base+TSICR ));  
+-early_print("TCAR2 :%08x\n",__raw_readl(base+TCAR2 ));  
++	return 0;
++}
+ 
++static irqreturn_t omap2_gp_timer_interrupt(int irq, void *dev_id)
++{
++	u32 reg;
++	struct clock_event_device *evt = &clockevent_generic;
++	reg = __raw_readl(dmt_base_reg +IRQSTATUS);
++	early_print("%s %08x\n", __func__, reg);
++	evt->event_handler(evt);
++	__raw_writel(reg, dmt_base_reg+IRQSTATUS);
++	return IRQ_HANDLED;
++}
++
++void timer_dump(void __iomem *base)
++{
++	early_print("TIDR:%08x\n",__raw_readl(base+TIDR));  
++	early_print("TIOCP_CFG :%08x\n",__raw_readl(base+TIOCP_CFG ));  
++	early_print("IRQ_EOI :%08x\n",__raw_readl(base+IRQ_EOI ));  
++	early_print("IRQSTATUS_RAW :%08x\n",__raw_readl(base+IRQSTATUS_RAW ));  
++	early_print("IRQSTATUS :%08x\n",__raw_readl(base+IRQSTATUS ));  
++	early_print("IRQENABLE_SET :%08x\n",__raw_readl(base+IRQENABLE_SET ));  
++	early_print("IRQENABLE_CLR :%08x\n",__raw_readl(base+IRQENABLE_CLR ));  
++	early_print("IRQWAKEEN :%08x\n",__raw_readl(base+IRQWAKEEN ));  
++	early_print("TCLR :%08x\n",__raw_readl(base+TCLR ));  
++	early_print("TCRR :%08x\n",__raw_readl(base+TCRR ));  
++	early_print("TLDR :%08x\n",__raw_readl(base+TLDR ));  
++	early_print("TTGR :%08x\n",__raw_readl(base+TTGR ));  
++	early_print("TWPS :%08x\n",__raw_readl(base+TWPS ));  
++	early_print("TMAR :%08x\n",__raw_readl(base+TMAR ));  
++	early_print("TCAR1 :%08x\n",__raw_readl(base+TCAR1 ));  
++	early_print("TSICR :%08x\n",__raw_readl(base+TSICR ));  
++	early_print("TCAR2 :%08x\n",__raw_readl(base+TCAR2 ));  
+ }
+ 
+ void g_timer_dump(void)
+@@ -89,32 +140,59 @@ void g_timer_dump(void)
+ 
+ static void __init low_generic_timer_init(void __iomem *base)
+ {
+-#if 0
+-	TIME_STOP(base);
+-	TIME_RESET(base);
+-	TIME_SET_CNT(base, 0xff);
+-	TIME_RELOAD_EN(base);
+-	TIME_INIT_EN(base);
+-	__raw_writel(0xff, base+TLDR);
+-	TIME_START(base);
+-#else
+-	__raw_writel(0x9000, base+TLDR);
+-	__raw_writel(0x4000, base+TTGR);
+-	TIME_INIT_EN(base);
+-	__raw_writel(2<<2 | 1<<5 | 1 <<1 | 1 | 1<<6, base+TCLR);
+-	
+-#endif
++	__raw_writel((__raw_readl(base+TCLR) & (~(DMT_TCLR_START|DMT_TCLR_AUTOLOAD))), base+TCLR); // stop timer
++	__raw_writel(DMT_TSICR_RESET, base+TSICR);
++	while (__raw_readl(base+TIOCP_CFG) & DMT_TIOCP_RESET)
++		continue;
++
++	__raw_writel(0, base+TLDR);
++	__raw_writel(0, base+TCRR);
++	//__raw_writel(TCLR, DMT_TCLR_START | DMT_TCLR_AUTOLOAD);
++
++	/*
++	 * Stop the timer before changing it.  This routine will often be called
++	 * while the timer is still running, to either lengthen or shorten the
++	 * current event time.  We need to ensure the timer doesn't expire while
++	 * we're working with it.
++	 *
++	 * Also clear any pending interrupt status, because it's at least
++	 * theoretically possible that we're running in a primary interrupt
++	 * context now, and a timer interrupt could be pending even before we
++	 * stopped the timer.  The more likely case is that we're being called
++	 * from the et_event_cb() routine dispatched from our own handler, but
++	 * it's not clear to me that that's the only case possible.
++	 */
++	__raw_writel(DMT_IRQ_OVF, base+IRQSTATUS);
++	/*
++	 * Set auto-reload and current-count values.  This timer hardware counts
++	 * up from the initial/reload value and interrupts on the zero rollover.
++	 */
++	__raw_writel(0xFFFFFFFF - 0x8000, base+TLDR);
++	__raw_writel(0xFFFFFFFF - 0x8000, base+TCRR);
++
++	/* Enable overflow interrupt, and start the timer. */
++	__raw_writel(DMT_IRQ_OVF, base+IRQENABLE_SET);
++	__raw_writel(__raw_readl(base+TCLR) | (DMT_TCLR_START|DMT_TCLR_AUTOLOAD), base+TCLR); // start timer
+ }
+ 
+ void generic_timer_init(void)
+ {
+ 	u32 irqnr;
++	struct clk *timer_clk;
+ 
++	generic_clk_init();
+ 	dmt_base_reg = ioremap(DMTIMER0_REG_BASE, SZ_4K);
+ 	low_generic_timer_init(dmt_base_reg);
+ 	irqnr = irq_find_mapping(domain, 66);
+ 	if (irqnr)
+ 		setup_irq(irqnr,&omap2_gp_timer_irq);
+-	//test_irq();
++
++	timer_clk = clk_get_sys("dmtimer.0", "dmtimer");
++	if (timer_clk) {
++		early_print("DEBUG: register timer\n");
++		clockevents_config_and_register(&clockevent_generic,
++					clk_get_rate(timer_clk),
++					0xff, 0xfffffffe);
++	}
+ 	//timer_dump(dmt_base_reg);
+ }
+-- 
+1.9.1
+

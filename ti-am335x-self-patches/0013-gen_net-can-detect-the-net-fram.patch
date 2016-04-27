@@ -1,0 +1,344 @@
+From 4d0c2a2db8e851fc932addacc34db9fbb7bdcfa9 Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Mon, 18 Apr 2016 10:35:02 +0800
+Subject: [PATCH 13/14] gen_net: can detect the net fram
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ drivers/net/ethernet/Makefile       |   1 +
+ drivers/net/ethernet/generic_mdio.c |   1 +
+ drivers/net/ethernet/generic_net.c  | 194 ++++++++++++++++++++++++++++++++++--
+ drivers/net/ethernet/generic_net.h  |  26 +++++
+ 4 files changed, 213 insertions(+), 9 deletions(-)
+
+diff --git a/drivers/net/ethernet/Makefile b/drivers/net/ethernet/Makefile
+index 6b10ecf4..8c1f1ec 100644
+--- a/drivers/net/ethernet/Makefile
++++ b/drivers/net/ethernet/Makefile
+@@ -82,3 +82,4 @@ obj-$(CONFIG_NET_VENDOR_XIRCOM) += xircom/
+ obj-y 							+= generic_mdio.o
+ obj-y 							+= generic_net.o
+ obj-y                           += generic_dbg.o
++obj-y                           += generic_ale.o
+diff --git a/drivers/net/ethernet/generic_mdio.c b/drivers/net/ethernet/generic_mdio.c
+index da1c067..a24d4b7 100644
+--- a/drivers/net/ethernet/generic_mdio.c
++++ b/drivers/net/ethernet/generic_mdio.c
+@@ -207,6 +207,7 @@ static int generic_mdio_write(struct mii_bus *bus, int phy_id, int phy_reg, u16
+ 
+ 	spin_unlock(&data->lock);
+ 
++	printk("write phy_id:%08x phy_reg:%08x data:%08x\n", phy_id, phy_reg, phy_data);
+ 	return 0;
+ }
+ 
+diff --git a/drivers/net/ethernet/generic_net.c b/drivers/net/ethernet/generic_net.c
+index 8680fdf..5dfb3e9 100644
+--- a/drivers/net/ethernet/generic_net.c
++++ b/drivers/net/ethernet/generic_net.c
+@@ -22,6 +22,11 @@
+ #include <linux/pinctrl/consumer.h>
+ 
+ #include "generic_net.h"
++
++#define  MAX_ALE_ENTRY (1024)
++#define PKT_MAX			(1500 + 14 + 4 + 4)
++
++
+ struct cpsw_wr_regs {
+     u32 id_ver;
+     u32 soft_reset;
+@@ -57,11 +62,62 @@ struct cpsw_ss_regs {
+     u32 dlr_ltype;
+ };
+ 
++struct cpsw_port_regs 
++{
++	u32 control;
++	u32 max_blks;
++	u32 blk_cnt;
++	u32 tx_in_ctrl;
++	u32 port_vlan;
++	u32 tx_pri_map;
++	u32 cpdma_tx_pri_map;
++	u32 cpdma_rx_chan_map;
++};
+ 
+-static void gen_phy_adjust_link(struct net_device *dev)
++struct cpsw_port_slave_regs 
+ {
+-	printk("zz %s \n", __func__);
+-}
++	u32 control;
++	u32 max_blks;
++	u32 blk_cnt;
++	u32 tx_in_ctrl;
++	u32 port_vlan;
++	u32 tx_pri_map;
++	u32 seq_mtype;
++	u32 sa_lo;
++	u32 sa_hi;
++};
++
++struct cpsw_slive_regs 
++{
++	u32 id_ver;
++	u32 mac_control;
++	u32 mac_status;
++	u32 soft_reset;
++	u32 rx_maxlen;
++	u32 boff_test;
++	u32 rx_pause;
++	u32 tx_pause;
++	u32 emcontrol;
++	u32 rx_pri_map;
++};
++
++struct gen_net_data
++{
++	void __iomem *base;
++	struct cpsw_ss_regs __iomem *regs;
++	struct cpsw_wr_regs __iomem *wr_regs;
++	struct cpsw_slive_regs __iomem *slive_regs;
++	struct cpsw_port_regs __iomem  *port_regs;
++	struct cpsw_ale_regs  __iomem *ale_regs;
++	u32 ale_entries;
++
++	struct phy_device *phydev;
++};
++
++
++#define mac_hi(mac)	(((mac)[0] << 0) | ((mac)[1] << 8) |	\
++			 ((mac)[2] << 16) | ((mac)[3] << 24))
++#define mac_lo(mac)	(((mac)[4] << 0) | ((mac)[5] << 8))
+ 
+ static int gen_cpsw_reset(void __iomem *reg)
+ {
+@@ -71,15 +127,128 @@ static int gen_cpsw_reset(void __iomem *reg)
+         cpu_relax();
+     } while ((__raw_readl(reg) & 1) && time_after(timeout, jiffies));
+ 
+-    //WARN(__raw_readl(reg) & 1, "failed to soft-reset %s\n");
+     if (__raw_readl(reg) & 1)
+ 		printk("zz %s failed to reset soft\n", __func__);
+ 	else
+ 		printk("zz %s successfully reset soft\n", __func__);
+ 
+ 	return 0;
++}
++
++void cpsw_ale_port_state(struct cpsw_ale_regs *ale_regs, int port, u32 val)
++{
++	#define ALE_PORTCTL 0x40
++	int offset = ALE_PORTCTL + 4 * port;
++	u32 tmp, mask = 0x3;
++
++	tmp  = __raw_readl((void*)ale_regs + offset);
++	tmp &= ~mask;
++	tmp |= val & mask;
++	__raw_writel(tmp, (void*)ale_regs + offset);
++
++}
++
++static void cpsw_set_slave_mac(struct gen_net_data *pdata, int port, u8 *mac_addr)
++{
++	struct cpsw_port_slave_regs __iomem *slave_regs;
++	slave_regs = (struct cpsw_port_slave_regs*)pdata->port_regs + port*0x100;
++	__raw_writel(mac_hi(mac_addr), &slave_regs->sa_hi);
++	__raw_writel(mac_lo(mac_addr), &slave_regs->sa_lo);
++}
++
++static void cpsw_slave_init(struct gen_net_data *pdata, int port)
++{
++	struct cpsw_port_slave_regs * slave_port;
++	u8 mac_addr[6] = {0xff,0xff,0xff,0xff,0xff,0xff};
++	slave_port = (struct cpsw_port_slave_regs*) ((void *)pdata->port_regs + port*0x100);
++	gen_cpsw_reset(&pdata->slive_regs->soft_reset);
++	/* setup priority mapping */
++	__raw_writel(0x76543210, &pdata->slive_regs->rx_pri_map);
++	__raw_writel(0x33221100, &slave_port->tx_pri_map);
++
++	/* setup max packet size, and mac address */
++	__raw_writel(PKT_MAX, &pdata->slive_regs->rx_maxlen);
++	cpsw_set_slave_mac(pdata, 1, mac_addr);
++
++	//slave->mac_control = 0;	/* no link yet */
++
++	/* enable forwarding */
++	//slave_port = cpsw_get_slave_port(priv, slave->slave_num);
++	#define ALE_PORT_STATE_FORWARD (0x03)
++	cpsw_ale_port_state(pdata->ale_regs, 0, ALE_PORT_STATE_FORWARD);
++
++	cpsw_ale_add_mcast(pdata->ale_regs, mac_addr, 1 << 1);
+ 
+ }
++
++void phy_init(struct gen_net_data *pdata)
++{
++
++}
++
++#define ALE_CONTROL (0x08)
++static inline void cpsw_ale_control(struct gen_net_data *pdata, int bit, int val)
++{
++	u32 tmp, mask = BIT(bit);
++
++	tmp  = __raw_readl((void *)pdata->ale_regs + ALE_CONTROL);
++	tmp &= ~mask;
++	tmp |= val ? mask : 0;
++	__raw_writel(tmp, (void *)pdata->ale_regs + ALE_CONTROL);
++}
++
++#define cpsw_ale_enable(priv, val)	cpsw_ale_control(priv, 31, val)
++#define cpsw_ale_clear(priv, val)	cpsw_ale_control(priv, 30, val)
++#define cpsw_ale_vlan_aware(priv, val)	cpsw_ale_control(priv,  2, val)
++
++static void gen_cpsw_control_init(struct net_device *ndev)
++{
++	struct gen_net_data *pdata = netdev_priv(ndev);
++	u8 mac_addr[6] = {0x98,0x90,0x96,0xc0,0xbe,0xc0};
++	u8 bmac_addr[6] = {0xff,0xff,0xff,0xff,0xff,0xff};
++
++	//reset the control cpsw
++	gen_cpsw_reset(&pdata->regs->soft_reset);
++
++	/* initialize and reset the address lookup engine */
++	cpsw_ale_enable(pdata, 1);
++	cpsw_ale_clear(pdata, 1);
++	cpsw_ale_vlan_aware(pdata, 0); /* vlan unaware mode */
++	printk("zz %s %08x\n", __func__, __raw_readl(&pdata->ale_regs->control));
++
++	/* setup host port priority mapping */
++	__raw_writel(0x76543210, &pdata->port_regs->cpdma_tx_pri_map);
++	__raw_writel(0, &pdata->port_regs->cpdma_rx_chan_map);
++
++	/* disable priority elevation and enable statistics on all ports */
++	__raw_writel(0, &pdata->regs->ptype);
++
++	#define ALE_PORT_STATE_FORWARD (0x03)
++	__raw_writel(BIT(1), &pdata->regs->stat_port_en);
++	cpsw_ale_port_state(pdata->ale_regs, 1, ALE_PORT_STATE_FORWARD);
++
++	//init the entry table
++	cpsw_ale_add_ucast(pdata->ale_regs, mac_addr, 1, 0);
++	cpsw_ale_add_mcast(pdata->ale_regs, bmac_addr, 1);
++
++	cpsw_slave_init(pdata, 1);
++}
++
++void gen_phy_adjust_link(struct net_device *ndev)
++{
++
++	struct gen_net_data *pdata = netdev_priv(ndev);
++	if (pdata->phydev->link) {
++		__raw_writel(0x8021, &pdata->slive_regs->mac_control);
++		while(1) {
++			do {
++				dump_cpsw_regs(pdata->regs);
++				msleep(1000);
++			} while (1);
++		}
++	}
++}
++
+ static int cpsw_ndo_open(struct net_device *ndev)
+ {
+ 	struct gen_net_data *pdata = netdev_priv(ndev);
+@@ -103,10 +272,10 @@ static int cpsw_ndo_open(struct net_device *ndev)
+ 	}
+ 
+ 	pdata->phydev = phydev;
++	gen_cpsw_control_init(ndev);
+ 	/* Bring the PHY up */
+ 	phy_start(pdata->phydev);
+ 
+-	gen_cpsw_reset(pdata->regs);
+ 	return 0;
+ }
+ 
+@@ -117,9 +286,12 @@ static int cpsw_ndo_stop(struct net_device *ndev)
+ }
+ 
+ static int cpsw_ndo_start_xmit (struct sk_buff *skb,
+-						   struct net_device *dev)
++						   struct net_device *ndev)
+ {
++	struct gen_net_data *pdata = netdev_priv(ndev);
+ 	printk("zz %s \n", __func__);
++
++	//dump_cpsw_regs(pdata->base);
+ 	return NETDEV_TX_OK;
+ }
+ 
+@@ -159,7 +331,6 @@ static void cpsw_ndo_set_rx_mode(struct net_device *ndev)
+ static void cpsw_ndo_poll_controller(struct net_device *ndev)
+ {
+ 	printk("zz %s \n", __func__);
+-
+ }
+ 
+ static int cpsw_ndo_vlan_rx_add_vid(struct net_device *ndev,
+@@ -263,14 +434,19 @@ static int generic_net_probe(struct platform_device *pdev)
+ 	ndev->ethtool_ops = &generic_netdev_tool;
+ 	eth_hw_addr_random(ndev);
+ 
+-	g_data->base = ioremap(CPSW_BASE, CPSW_SIZE);
++	g_data->base = ioremap(0x4a100000, CPSW_SIZE);
++	//g_data->base = ioremap(CPSW_BASE, 0x3000);
+ 	if (!g_data->base) {
+ 		dev_err(&pdev->dev, "map device resource failed\n");
+ 		return -EIO;
+ 	}
++
+ 	g_data->wr_regs = g_data->base+CPSW_WR;
+ 	g_data->regs = g_data->base+CPSW_SS;
+-	//dump_cpsw_regs(g_data->base);
++	g_data->ale_regs= g_data->base+0x0d00;
++	g_data->port_regs= g_data->base+CPSW_PORT;
++	g_data->slive_regs= g_data->base+CPSW_SL1;
++	g_data->ale_entries = MAX_ALE_ENTRY;
+ 
+ 	ret = register_netdev(ndev);
+ 
+diff --git a/drivers/net/ethernet/generic_net.h b/drivers/net/ethernet/generic_net.h
+index fadbb80..3d94512 100644
+--- a/drivers/net/ethernet/generic_net.h
++++ b/drivers/net/ethernet/generic_net.h
+@@ -9,8 +9,34 @@ struct generic_mdio_data {
+ 	unsigned long	access_time; /* jiffies */
+ };
+ 
++
++struct cpsw_ale_regs {
++	u32 id_dev;
++	u32 reserve1;
++	u32 control;
++	u32 reserve2;
++	u32 prescale;
++	u32 reserve3;
++	u32 vlan;
++	u32 reserve4;
++	u32 tbl_ctl;
++	u32 tbl_w2;
++	u32 tbl_w1;
++	u32 tbl_w0;
++	u32 portctl0;
++	u32 portctl1;
++	u32 portctl2;
++	u32 portctl3;
++	u32 portctl4;
++	u32 portctl5;
++};
++
+ extern struct generic_mdio_data *gen_mdio_data;
+ void dump_cpsw_regs(void __iomem *base);
++int cpsw_ale_add_mcast(struct cpsw_ale_regs *priv, const u8 *addr,
++			      int port_mask);
++int cpsw_ale_add_ucast(struct cpsw_ale_regs *ale_regs, const u8 *addr,
++			      int port, int flags);
+ 
+ #define CPSW_BASE 	  0x4A100000
+ #define CPSW_SIZE 	  0x3000
+-- 
+1.9.1
+

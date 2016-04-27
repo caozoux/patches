@@ -1,0 +1,287 @@
+From 39aca9bdca6937576837ba694bab77804dd1d09c Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Wed, 2 Mar 2016 15:47:29 +0800
+Subject: [PATCH 09/14] uart: generic: now uart can work now
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ arch/arm/configs/generic_defconfig  |   1 +
+ arch/arm/mach-generic/timer.c       |   4 +-
+ drivers/tty/serial/Kconfig          |   4 ++
+ drivers/tty/serial/Makefile         |   2 +-
+ drivers/tty/serial/generic_serial.c | 130 +++++++++++++++++++++++++++++++++---
+ 5 files changed, 130 insertions(+), 11 deletions(-)
+
+diff --git a/arch/arm/configs/generic_defconfig b/arch/arm/configs/generic_defconfig
+index 8cb58b2..cf19c22 100644
+--- a/arch/arm/configs/generic_defconfig
++++ b/arch/arm/configs/generic_defconfig
+@@ -6,3 +6,4 @@ CONFIG_DEBUG_LL=y
+ #CONFIG_GENERIC_UART1=Y
+ DEBUG_AM33XXUART1=y
+ CONFIG_GENERIC_IRQ_CHIP=y
++CONFIG_SERIAL_GENERIC=y
+diff --git a/arch/arm/mach-generic/timer.c b/arch/arm/mach-generic/timer.c
+index 19d8bbb..65772de 100644
+--- a/arch/arm/mach-generic/timer.c
++++ b/arch/arm/mach-generic/timer.c
+@@ -167,8 +167,8 @@ static void __init low_generic_timer_init(void __iomem *base)
+ 	 * Set auto-reload and current-count values.  This timer hardware counts
+ 	 * up from the initial/reload value and interrupts on the zero rollover.
+ 	 */
+-	__raw_writel(0xFFFFFFFF - 0x2000, base+TLDR);
+-	__raw_writel(0xFFFFFFFF - 0x2000, base+TCRR);
++	__raw_writel(0xFFFFFFFF - 0x200, base+TLDR);
++	__raw_writel(0xFFFFFFFF - 0x200, base+TCRR);
+ 
+ 	/* Enable overflow interrupt, and start the timer. */
+ 	__raw_writel(DMT_IRQ_OVF, base+IRQENABLE_SET);
+diff --git a/drivers/tty/serial/Kconfig b/drivers/tty/serial/Kconfig
+index a3815ea..dc0b78d 100644
+--- a/drivers/tty/serial/Kconfig
++++ b/drivers/tty/serial/Kconfig
+@@ -1507,6 +1507,10 @@ config SERIAL_ST_ASC_CONSOLE
+ 	depends on SERIAL_ST_ASC=y
+ 	select SERIAL_CORE_CONSOLE
+ 
++config SERIAL_GENERIC
++	bool "Support for console on ST ASC"
++	depends on ARCH_GENERIC=y
++	select SERIAL_CORE_CONSOLE
+ endmenu
+ 
+ endif # TTY
+diff --git a/drivers/tty/serial/Makefile b/drivers/tty/serial/Makefile
+index cd48342..fc478eb 100644
+--- a/drivers/tty/serial/Makefile
++++ b/drivers/tty/serial/Makefile
+@@ -87,4 +87,4 @@ obj-$(CONFIG_SERIAL_EFM32_UART) += efm32-uart.o
+ obj-$(CONFIG_SERIAL_ARC)	+= arc_uart.o
+ obj-$(CONFIG_SERIAL_RP2)	+= rp2.o
+ obj-$(CONFIG_SERIAL_FSL_LPUART)	+= fsl_lpuart.o
+-obj-y += generic_serial.o
++obj-$(CONFIG_SERIAL_GENERIC) += generic_serial.o
+diff --git a/drivers/tty/serial/generic_serial.c b/drivers/tty/serial/generic_serial.c
+index 999bcc2..a828ea4 100644
+--- a/drivers/tty/serial/generic_serial.c
++++ b/drivers/tty/serial/generic_serial.c
+@@ -3,17 +3,20 @@
+ #include <linux/timer.h>
+ #include <linux/interrupt.h>
+ #include <linux/module.h>
++#include <linux/delay.h>
+ #include <linux/console.h>
+ #include <linux/tty.h>
+ #include <linux/tty_flip.h>
+ #include <linux/serial.h>
+ #include <linux/serial_core.h>
++#include <linux/serial_reg.h>
+ #include <linux/platform_device.h>
+ #include <linux/of.h>
+ #include <linux/io.h>
+ //#include <linux/generic_uart.h>
+ #include <linux/clk.h>
+ #include <linux/serial_core.h>
++#include <linux/platform_data/serial-omap.h>
+ #include <asm/setup.h>
+ 
+ #define DRV_NAME "generic_uart"
+@@ -34,22 +37,93 @@ static struct generic_uart generic_uart_ports;
+ static struct uart_driver generic_uart_driver;
+ static struct console generic_uart_console;
+ 
++static inline unsigned int serial_in(struct generic_uart *up, int offset)
++{
++	offset <<= up->port.regshift;
++	return readw(up->port.membase + offset);
++}
++
++static inline void serial_out(struct generic_uart *up, int offset, int value)
++{
++	offset <<= up->port.regshift;
++	writew(value, up->port.membase + offset);
++}
++
++
++void low_generic_uart_putchar(struct generic_uart *up, u8 ch)
++{
++       while ((serial_in(up, UART_LSR) & UART_LSR_THRE) == 0)
++               ;
++	  while(1)
++       serial_out(up, UART_TX, 'a');
++}
++#define BOTH_EMPTY (UART_LSR_TEMT | UART_LSR_THRE)
++static inline void wait_for_xmitr(struct generic_uart *up)
++{
++	unsigned int status, tmout = 10000;
++
++	//low_generic_uart_putchar(up, 'a');
++	/* Wait up to 10ms for the character(s) to be sent. */
++	do {
++		status = serial_in(up, UART_LSR);
++
++		if (--tmout == 0)
++			break;
++		udelay(1);
++	} while ((status & BOTH_EMPTY) != BOTH_EMPTY);
++
++#if 0
++	/* Wait up to 1s for flow control if necessary */
++	if (up->port.flags & UPF_CONS_FLOW) {
++		tmout = 1000000;
++		for (tmout = 1000000; tmout; tmout--) {
++			unsigned int msr = serial_in(up, UART_MSR);
++
++			up->msr_saved_flags |= msr & MSR_SAVE_FLAGS;
++			if (msr & UART_MSR_CTS)
++				break;
++
++			udelay(1);
++		}
++	}
++#endif
++}
++
++void serial_generic_console_putchar(struct uart_port *port, int ch)
++{
++	struct generic_uart *up = container_of(port, struct generic_uart, port);
++	wait_for_xmitr(up);
++	serial_out(up, UART_TX, ch);
++}
++
+ static void generic_uart_console_write(struct console *co, const char *s,
+ 				      unsigned int count)
+ {
+-	early_print("%s \n", __func__);
++	struct generic_uart *up = &generic_uart_ports;
++	unsigned int ier;
++	//early_print("%s \n", __func__);
++	ier = serial_in(up, UART_IER);
++	serial_out(up, UART_IER, 0);
++	uart_console_write(&up->port, s, count, serial_generic_console_putchar);
++	wait_for_xmitr(up);
++	serial_out(up, UART_IER, ier);
+ }
+ 
+ static int __init generic_uart_console_setup(struct console *co, char *options)
+ {
+-	early_print("%s \n", __func__);
+-	return 0;
++	int baud = 115200;
++	int bits = 8;
++	int parity = 'n';
++	int flow = 'n';
++	early_print("%s \n", __func__, &generic_uart_ports);
++	uart_parse_options(options, &baud, &parity, &bits, &flow);
++	return uart_set_options(&generic_uart_ports.port, co, baud, parity, bits, flow);
+ }
+ 
+ static struct uart_driver generic_uart_driver = {
+ 	.owner		= THIS_MODULE,
+ 	.driver_name	= DRV_NAME,
+-	.dev_name	= "ttyOS",
++	.dev_name	= "ttyO",
+ 	.major		= SERIAL_GENERIC_MAJOR,
+ 	.minor		= SERIAL_GENERIC_MINOR,
+ 	.nr		= 1,
+@@ -57,7 +131,7 @@ static struct uart_driver generic_uart_driver = {
+ };
+ 
+ static struct console generic_uart_console = {
+-	.name	= "ttyOS",
++	.name	= "ttyO",
+ 	.write	= generic_uart_console_write,
+ 	.device	= uart_console_device,
+ 	.setup	= generic_uart_console_setup,
+@@ -72,7 +146,7 @@ static int __init generic_uart_console_init(void)
+ 	register_console(&generic_uart_console);
+ 	return 0;
+ }
+-console_initcall(generic_uart_console_init);
++//console_initcall(generic_uart_console_init);
+ 
+ static unsigned int generic_uart_tx_empty(struct uart_port *port)
+ {
+@@ -124,7 +198,42 @@ static void generic_uart_set_termios(struct uart_port *port,
+ 				    struct ktermios *termios,
+ 				    struct ktermios *old)
+ {
++	struct generic_uart *up = container_of(port, struct generic_uart, port);
++	unsigned char cval = 0;
++	unsigned long flags = 0;
++	unsigned int baud, quot;
++
++	switch (termios->c_cflag & CSIZE) {
++	case CS5:
++		cval = UART_LCR_WLEN5;
++		break;
++	case CS6:
++		cval = UART_LCR_WLEN6;
++		break;
++	case CS7:
++		cval = UART_LCR_WLEN7;
++		break;
++	default:
++	case CS8:
++		cval = UART_LCR_WLEN8;
++		break;
++	}
++
++	if (termios->c_cflag & CSTOPB)
++		cval |= UART_LCR_STOP;
++	if (termios->c_cflag & PARENB)
++		cval |= UART_LCR_PARITY;
++	if (!(termios->c_cflag & PARODD))
++		cval |= UART_LCR_EPAR;
++	if (termios->c_cflag & CMSPAR)
++		cval |= UART_LCR_SPAR;
+ 	early_print("%s \n", __func__);
++
++	baud = 115200;
++	/*
++	 * Update the per-port timeout.
++	 */
++	uart_update_timeout(port, termios->c_cflag, 115200);
+ }
+ 
+ static void generic_uart_rx_chars(struct generic_uart *pp)
+@@ -152,7 +261,9 @@ static void generic_uart_timer(unsigned long data)
+ 
+ static void generic_uart_config_port(struct uart_port *port, int flags)
+ {
+-	port->type = PORT_ALTERA_UART;
++	struct generic_uart *up = container_of(port, struct generic_uart, port);
++	up->port.type = PORT_ALTERA_UART;
++	up->port.flags |= UPF_SOFT_FLOW | UPF_HARD_FLOW;
+ 	early_print("%s \n", __func__);
+ }
+ 
+@@ -235,7 +346,7 @@ static int generic_uart_probe(struct platform_device *pdev)
+ 
+ 	early_print("zz %s \n", __func__);
+ 
+-	port = &generic_uart_ports;
++	port = &generic_uart_ports.port;
+ 	res_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+ 	if (res_mem)
+ 		port->mapbase = res_mem->start;
+@@ -243,6 +354,7 @@ static int generic_uart_probe(struct platform_device *pdev)
+ 	res_irq = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
+ 	if (res_irq)
+ 		port->irq = res_irq->start;
++
+ 	port->uartclk = 115200;
+ 	dev_info(&pdev->dev, "IO resource:%08x \n", port->mapbase);
+ 	dev_info(&pdev->dev, "clk rate:%d \n", port->uartclk);
+@@ -251,6 +363,8 @@ static int generic_uart_probe(struct platform_device *pdev)
+ 	if (!port->membase)
+ 		return -ENOMEM;
+ 
++	port->regshift = 2;
++	port->fifosize = 64;
+ 	port->line = 0;
+ 	port->type = PORT_ALTERA_UART;
+ 	port->iotype = SERIAL_IO_MEM;
+-- 
+1.9.1
+
