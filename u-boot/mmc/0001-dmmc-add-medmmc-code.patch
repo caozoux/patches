@@ -1,0 +1,389 @@
+From 5457ee3e10ed345366231236cf919d9eb6242267 Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Fri, 19 Aug 2016 10:48:18 +0800
+Subject: [PATCH 1/2] dmmc: add medmmc code
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ common/Makefile   |   1 +
+ common/cmd_dmmc.c | 356 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 357 insertions(+)
+ create mode 100644 common/cmd_dmmc.c
+
+diff --git a/common/Makefile b/common/Makefile
+index 54fcc81..61a0840 100644
+--- a/common/Makefile
++++ b/common/Makefile
+@@ -224,6 +224,7 @@ COBJS-y += dlmalloc.o
+ COBJS-y += image.o
+ COBJS-y += memsize.o
+ COBJS-y += stdio.o
++COBJS-y += cmd_dmmc.o
+ 
+ 
+ COBJS	:= $(sort $(COBJS-y))
+diff --git a/common/cmd_dmmc.c b/common/cmd_dmmc.c
+new file mode 100644
+index 0000000..b5a380f
+--- /dev/null
++++ b/common/cmd_dmmc.c
+@@ -0,0 +1,356 @@
++#include <common.h>
++#include <command.h>
++#include <mmc.h>
++#include <asm/io.h>
++#include <sdhci.h>
++
++static dmmc_regs_dump(void);
++static int dmmc_mmc_set_idle(void);
++struct dmmc_op_reg {
++	u32 sysAddr; /*system address*/
++	u32 BcAndSz; /*block count and size register*/
++	u32 ComArgs; /*command arguments*/
++	u32 ComTran;
++	u32 Resp01;
++	u32 Resp23;
++	u32 Resp45;
++	u32 Resp67;
++	u32 BufData;
++	u32 Pre;
++	u32 HostCtrl;
++	u32 HostCtrl1;
++	u32 InitState;
++	u32 InitEn;
++	u32 InitEn1;
++	u32 Cap1;
++	u32 Cap2;
++	u32 Max1;
++	u32 Max2;
++	u32 ForEv;
++	u32 AdmaErr;
++	u32 AdmaAddrh;
++	u32 AdmaAddrl;
++	u32 SoltInitS;
++	u32 SdEx;
++	u32 FIFOParam;
++	u32 SpiM;
++	u32 CE_ATA;
++	u32 DrivLen;
++	u32 RxCtrl;
++	u32 TxCtrl;
++	u32 HostV0;
++	u32 HostV1;
++};
++
++struct dmmc_cmd {
++	u32 cmdidx;
++	u32 cmdarg;
++	u32 resp_type;
++	u32 response[8];
++};
++
++static u32 dmmc_has_init;
++static struct dmmc_op_reg *mmc_regs;
++static inline void dmmc_writel(u32 val, u32 reg)
++{
++		writel(val, (u32)mmc_regs+reg);
++}
++
++static inline void dmmc_writew(u16 val, u32 reg)
++{
++	writew(val, (u32)mmc_regs+reg);
++}
++
++static inline u32 dmmc_readl(u32 reg)
++{
++	return	readl((u32)mmc_regs+reg);
++}
++
++static int dmmc_mmc_send_op_cond(void)
++{
++	int err;
++	struct dmmc_cmd cmd;
++	udelay(1000);
++	dmmc_mmc_set_idle();
++	udelay(2000);
++
++	cmd.cmdidx = MMC_CMD_SEND_OP_COND;
++	cmd.resp_type = MMC_RSP_R3;
++	cmd.cmdarg = 0;
++	err = dmmc_send_cmd(&cmd);
++	if (err)
++		return err;
++	return 0;
++}
++
++static int dmmc_sd_send_op_cond(void)
++{
++	struct dmmc_cmd cmd;
++	cmd.cmdidx = MMC_CMD_APP_CMD;
++	cmd.resp_type = MMC_RSP_R1;
++	cmd.cmdarg = 0;
++
++	if (dmmc_send_cmd(&cmd)) {
++		return 1;
++	}
++	cmd.cmdidx = SD_CMD_APP_SEND_OP_COND;
++	cmd.resp_type = MMC_RSP_R3;
++	cmd.cmdarg |= OCR_HCS;
++	if (dmmc_send_cmd(&cmd)) {
++		printf("zz %s cmd error\n", __func__);
++	}
++	return 0;
++}
++
++static int dmmc_mmc_set_idle(void)
++{
++	struct dmmc_cmd cmd;
++	cmd.cmdidx = 0;
++	cmd.cmdarg = 0;
++	cmd.resp_type = MMC_RSP_NONE;
++	if (!dmmc_send_cmd(&cmd)) {
++		return 1;
++	}
++	return 0;
++}
++
++static int dmmc_send_if_cond(void)
++{
++	struct dmmc_cmd cmd;
++	u32 version;
++	cmd.cmdidx = SD_CMD_SEND_IF_COND;
++	cmd.resp_type = MMC_RSP_R7;
++	cmd.cmdarg = 0x1aa;
++	if (!dmmc_send_cmd(&cmd)) {
++		printf("zz %s cmd error\n", __func__);
++	}
++
++	if ((cmd.response[0] & 0xff) != 0xaa)
++		return UNUSABLE_ERR;
++	else
++		version = SD_VERSION_2;
++	return 0;
++}
++
++static void dmmc_cmd_done(struct dmmc_cmd *cmd)
++{
++	cmd->response[0] = dmmc_readl(SDHCI_RESPONSE);
++}
++
++int dmmc_send_cmd(struct dmmc_cmd *cmd)
++{
++#define CONFIG_SDHCI_CMD_DEFAULT_TIMEOUT 200
++	unsigned int stat = 0;
++	u32 mask, flags, start;
++	unsigned int cmd_timeout = CONFIG_SDHCI_CMD_DEFAULT_TIMEOUT;
++
++	mask = SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT;
++	dmmc_writel(SDHCI_INT_ALL_MASK, SDHCI_INT_STATUS);
++	if (dmmc_readl(SDHCI_PRESENT_STATE) & mask) {
++		printf("mmc busy\n");
++		return 1;
++	}
++
++	mask = SDHCI_INT_RESPONSE;
++	if (!(cmd->resp_type & MMC_RSP_PRESENT))
++		flags = SDHCI_CMD_RESP_NONE;
++	else if (cmd->resp_type & MMC_RSP_136)
++		flags = SDHCI_CMD_RESP_LONG;
++	else if (cmd->resp_type & MMC_RSP_BUSY) {
++		flags = SDHCI_CMD_RESP_SHORT_BUSY;
++		mask |= SDHCI_INT_DATA_END;
++	} else
++		flags = SDHCI_CMD_RESP_SHORT;
++
++	if (cmd->resp_type & MMC_RSP_CRC)
++		flags |= SDHCI_CMD_CRC;
++	if (cmd->resp_type & MMC_RSP_OPCODE)
++		flags |= SDHCI_CMD_INDEX;
++	/*if (data)
++		flags |= SDHCI_CMD_DATA;
++	*/
++
++	dmmc_writel(cmd->cmdarg, SDHCI_ARGUMENT);
++	dmmc_writew(SDHCI_MAKE_CMD(cmd->cmdidx, flags), SDHCI_COMMAND);
++
++	start = get_timer(0);
++	do {
++		stat = dmmc_readl(SDHCI_INT_STATUS);
++		if (stat & SDHCI_INT_ERROR) {
++			printf("zz %s cmd err\n", __func__);
++			return 1;
++		}
++	} while((stat & mask) != mask &&
++			(get_timer(start) < CONFIG_SDHCI_CMD_DEFAULT_TIMEOUT));
++
++	if ((stat & mask) == mask) {
++		dmmc_cmd_done(cmd);
++		dmmc_writel(mask, SDHCI_INT_STATUS);
++	} else {
++		if (get_timer(start) >= CONFIG_SDHCI_CMD_DEFAULT_TIMEOUT) {
++			//printf("cmd timeout\n");
++		} else {
++			//printf("mmc cmd error\n");
++		}
++		return 1;
++	}
++	return 0;
++}
++
++static int dmmc_mmc_init(void)
++{
++	u32 ret;
++	ret = dmmc_mmc_set_idle();
++	if (ret)
++		goto error1;
++	dmmc_send_if_cond();
++	ret = dmmc_sd_send_op_cond();
++	if (ret) {
++		ret = dmmc_mmc_send_op_cond();
++		if (ret)
++			goto error2;
++	}
++
++	printf("find card\n");
++	return 0;
++error1:
++	return 1;
++error2:
++	printf("not find card\n");
++	return 1;
++}
++
++
++static int ddo_mmcops(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
++{
++	mmc_regs=0xf10d8000;
++	if (argc < 2)
++		return CMD_RET_USAGE;
++	if (strcmp(argv[1], "init") == 0) {
++		dmmc_mmc_init();
++	} else if (strcmp(argv[1], "reinit") == 0) {
++		printf("dmmc reinit\n");
++	} else if (strcmp(argv[1], "dump") == 0) {
++		dmmc_regs_dump();
++	} else if (strcmp(argv[1], "cmd") == 0) {
++		if (strcmp(argv[2], "read") == 0) {
++			int idx = 2;
++			u32 blk, cnt;
++			void *addr;
++
++			blk = simple_strtoul(argv[idx], NULL, 16);
++			cnt = simple_strtoul(argv[idx + 1], NULL, 16);
++			flush_cache((ulong)addr, cnt * 512); /* FIXME */
++
++		} else if (strcmp(argv[2], "write") == 0) {
++			int idx = 2;
++			u32 blk, cnt;
++			void *addr;
++
++			blk = simple_strtoul(argv[idx], NULL, 16);
++			cnt = simple_strtoul(argv[idx + 1], NULL, 16);
++			flush_cache((ulong)addr, cnt * 512); /* FIXME */
++
++		} else {
++			return 1;
++		}
++	} else if (strcmp(argv[1], "version") == 0) {
++			u32 regaddr;
++			regaddr = (u32)mmc_regs + 0x1f8;
++			printf(" regaddr:%08x val:%08x\n" ,(u32)regaddr, readl(regaddr));
++			regaddr = (u32)mmc_regs + 0x1fc;
++			printf(" regaddr:%08x val:%08x\n" ,(u32)regaddr, readl(regaddr));
++	} else if (strcmp(argv[1], "reg") == 0) {
++		if (strcmp(argv[2], "r") == 0) {
++			int idx = 3;
++			u32 regaddr;
++			regaddr = simple_strtoul(argv[idx], NULL, 16);
++			regaddr = (u32)mmc_regs + regaddr;
++			printf(" regaddr:%08x val:%08x\n" ,(u32)regaddr, readl(regaddr));
++		} else if (strcmp(argv[2], "w") == 0) {
++			int idx = 3;
++			u32 regaddr;
++			u32 val;
++			regaddr = simple_strtoul(argv[idx], NULL, 16);
++			val = simple_strtoul(argv[idx+1], NULL, 16);
++			regaddr = (u32)mmc_regs + regaddr;
++			printf(" regaddr:%08x val:%08x\n" ,(u32)regaddr, val);
++			writel(val, regaddr);
++		} else if (strcmp(argv[2], "cmd") == 0) {
++			if (strcmp(argv[3], "idle") == 0) {
++				dmmc_mmc_set_idle();
++			} else if (strcmp(argv[3], "if") == 0) {
++				dmmc_send_if_cond();
++			} else if (strcmp(argv[3], "op") == 0) {
++				dmmc_sd_send_op_cond();
++			} else {
++				return 1;
++			}
++		} else if (strcmp(argv[2], "wc") == 0) {
++			int idx = 3;
++			u32 regaddr;
++			u32 val;
++			val = simple_strtoul(argv[idx], NULL, 16);
++			regaddr = (u32)mmc_regs + 0xe;
++			val = val ;
++			printf(" regaddr:%08x val:%08x\n" ,(u32)regaddr, val);
++			writew(val, regaddr);
++		} else {
++			return 1;
++		}
++	} else {
++		return 1;
++	}
++	return 0;
++}
++
++static dmmc_regs_dump(void)
++{
++	printf("sysAddr:%08x\n",readl(&mmc_regs->sysAddr));
++	printf("BcAndSz:%08x\n",readl(&mmc_regs->BcAndSz));
++	printf("ComArgs:%08x\n",readl(&mmc_regs->ComArgs));
++	printf("ComTran:%08x\n",readl(&mmc_regs->ComTran));
++	printf("Resp01:%08x\n",readl(&mmc_regs->Resp01));
++	printf("Resp23:%08x\n",readl(&mmc_regs->Resp23));
++	printf("Resp45:%08x\n",readl(&mmc_regs->Resp45));
++	printf("Resp67:%08x\n",readl(&mmc_regs->Resp67));
++	printf("BufData:%08x\n",readl(&mmc_regs->BufData));
++	printf("Pre:%08x\n",readl(&mmc_regs->Pre));
++	printf("HostCtrl:%08x\n",readl(&mmc_regs->HostCtrl));
++	printf("HostCtrl1:%08x\n",readl(&mmc_regs->HostCtrl1));
++	printf("InitState:%08x\n",readl(&mmc_regs->InitState));
++	printf("InitEn:%08x\n",readl(&mmc_regs->InitEn));
++	printf("InitEn1:%08x\n",readl(&mmc_regs->InitEn1));
++	printf("Cap1:%08x\n",readl(&mmc_regs->Cap1));
++	printf("Cap2:%08x\n",readl(&mmc_regs->Cap2));
++	printf("Max1:%08x\n",readl(&mmc_regs->Max1));
++	printf("Max2:%08x\n",readl(&mmc_regs->Max2));
++	printf("ForEv:%08x\n",readl(&mmc_regs->ForEv));
++	printf("AdmaErr:%08x\n",readl(&mmc_regs->AdmaErr));
++	printf("AdmaAddrh:%08x\n",readl(&mmc_regs->AdmaAddrh));
++	printf("AdmaAddrl:%08x\n",readl(&mmc_regs->AdmaAddrl));
++	printf("SoltInitS:%08x\n",readl(&mmc_regs->SoltInitS));
++	printf("SdEx:%08x\n",readl(&mmc_regs->SdEx));
++	printf("FIFOParam:%08x\n",readl(&mmc_regs->FIFOParam));
++	printf("SpiM:%08x\n",readl(&mmc_regs->SpiM));
++	printf("CE_ATA:%08x\n",readl(&mmc_regs->CE_ATA));
++	printf("DrivLen:%08x\n",readl(&mmc_regs->DrivLen));
++	printf("RxCtrl:%08x\n",readl(&mmc_regs->RxCtrl));
++	printf("TxCtrl:%08x\n",readl(&mmc_regs->TxCtrl));
++	printf("HostV0:%08x\n",readl(&mmc_regs->HostV0));
++	printf("HostV1:%08x\n",readl(&mmc_regs->HostV1));
++}
++
++U_BOOT_CMD(
++	dmmc, 6, 1, ddo_mmcops,
++	"DMMC sub system",
++	"read addr blk# cnt\n"
++	"dmmc dump - print all register\n"
++	"dmmc write addr blk# cnt\n"
++	"dmmc erase blk# cnt\n"
++	"dmmc rescan\n"
++	"dmmc part - lists available partition on current mmc device\n"
++	"dmmc dev [dev] [part] - show or set current mmc device [partition]\n"
++	"dmmc list - lists available devices"
++	"dmmc setdsr - set DSR register value\n"
++	);
+-- 
+1.9.1
+

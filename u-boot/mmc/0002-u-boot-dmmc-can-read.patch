@@ -1,0 +1,796 @@
+From 91cb178bbd3602f90c56fbf205fedb08ff50e334 Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Tue, 23 Aug 2016 14:53:25 +0800
+Subject: [PATCH 2/2] u-boot: dmmc can read
+
+check the bus width, high speed, power up, sdma. it can work
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ common/cmd_dmmc.c | 641 +++++++++++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 611 insertions(+), 30 deletions(-)
+
+diff --git a/common/cmd_dmmc.c b/common/cmd_dmmc.c
+index b5a380f..f9bc521 100644
+--- a/common/cmd_dmmc.c
++++ b/common/cmd_dmmc.c
+@@ -4,8 +4,75 @@
+ #include <asm/io.h>
+ #include <sdhci.h>
+ 
++#define DMMC_TRACE
++#define LDBG(fmt,args...) do{ \
++			printf(fmt,##args);\
++		}while(0)
++
++static u8 cach_read[1024];
++static u8 cach_write[1024];
++struct dmmc_host {
++	u32 cid;
++	u32 rca;
++	u32 csd[4];
++	u32 tran_speed;
++	u32 scr[4];
++	u32 version;
++	u32 card_caps;
++	u32 host_caps;
++	u32 bus_width;
++	u32 clock;
++	u32 write_bl_len;
++	u32 read_bl_len;
++};
++
++struct dmmc_data {
++	union {
++		char *dest;
++		const char *src; /* src buffers don't get written to */
++	};
++	uint flags;
++	uint blocks;
++	uint blocksize;
++};
++
++static struct dmmc_host host;
+ static dmmc_regs_dump(void);
+ static int dmmc_mmc_set_idle(void);
++static int dmmc_send_status(int timeout);
++static int sd_change_freq();
++static void *aligned_buffer;
++/* frequency bases */
++/* divided by 10 to be nice to platforms without floating point */
++static const int fbase[] = {
++	10000,
++	100000,
++	1000000,
++	10000000,
++};
++
++/* Multiplier values for TRAN_SPEED.  Multiplied by 10 to be nice
++ * to platforms without floating point.
++ */
++static const int multipliers[] = {
++	0,	/* reserved */
++	10,
++	12,
++	13,
++	15,
++	20,
++	25,
++	30,
++	35,
++	40,
++	45,
++	50,
++	55,
++	60,
++	70,
++	80,
++};
++
+ struct dmmc_op_reg {
+ 	u32 sysAddr; /*system address*/
+ 	u32 BcAndSz; /*block count and size register*/
+@@ -53,19 +120,32 @@ static u32 dmmc_has_init;
+ static struct dmmc_op_reg *mmc_regs;
+ static inline void dmmc_writel(u32 val, u32 reg)
+ {
+-		writel(val, (u32)mmc_regs+reg);
++	writel(val, (u32)mmc_regs+reg);
+ }
+ 
+ static inline void dmmc_writew(u16 val, u32 reg)
+ {
+ 	writew(val, (u32)mmc_regs+reg);
+ }
++static inline void dmmc_writeb(u8 val, u32 reg)
++{
++	writeb(val, (u32)mmc_regs+reg);
++}
+ 
+ static inline u32 dmmc_readl(u32 reg)
+ {
+ 	return	readl((u32)mmc_regs+reg);
+ }
+ 
++static inline u32 dmmc_readb(u32 reg)
++{
++	return	readb((u32)mmc_regs+reg);
++}
++static inline u32 dmmc_readw(u32 reg)
++{
++	return	readw((u32)mmc_regs+reg);
++}
++
+ static int dmmc_mmc_send_op_cond(void)
+ {
+ 	int err;
+@@ -77,7 +157,7 @@ static int dmmc_mmc_send_op_cond(void)
+ 	cmd.cmdidx = MMC_CMD_SEND_OP_COND;
+ 	cmd.resp_type = MMC_RSP_R3;
+ 	cmd.cmdarg = 0;
+-	err = dmmc_send_cmd(&cmd);
++	err = dmmc_send_cmd(&cmd,NULL);
+ 	if (err)
+ 		return err;
+ 	return 0;
+@@ -86,19 +166,31 @@ static int dmmc_mmc_send_op_cond(void)
+ static int dmmc_sd_send_op_cond(void)
+ {
+ 	struct dmmc_cmd cmd;
+-	cmd.cmdidx = MMC_CMD_APP_CMD;
+-	cmd.resp_type = MMC_RSP_R1;
+-	cmd.cmdarg = 0;
++	int timeout = 6;
++	do {
++		cmd.cmdidx = MMC_CMD_APP_CMD;
++		cmd.resp_type = MMC_RSP_R1;
++		cmd.cmdarg = 0;
++
++		if (dmmc_send_cmd(&cmd,NULL)) {
++			return 1;
++		}
+ 
+-	if (dmmc_send_cmd(&cmd)) {
++		cmd.cmdidx = SD_CMD_APP_SEND_OP_COND;
++		cmd.resp_type = MMC_RSP_R3;
++		cmd.cmdarg = OCR_HCS | 0x300000;
++		if (dmmc_send_cmd(&cmd,NULL)) {
++			printf("zz %s cmd error\n", __func__);
++			return 1;
++		}
++		udelay(2000);
++	} while(timeout-- && (!(cmd.response[0] & OCR_BUSY)));
++
++	if (timeout <= 0) {
++		printf("op timeout\n");
+ 		return 1;
+ 	}
+-	cmd.cmdidx = SD_CMD_APP_SEND_OP_COND;
+-	cmd.resp_type = MMC_RSP_R3;
+-	cmd.cmdarg |= OCR_HCS;
+-	if (dmmc_send_cmd(&cmd)) {
+-		printf("zz %s cmd error\n", __func__);
+-	}
++
+ 	return 0;
+ }
+ 
+@@ -108,7 +200,7 @@ static int dmmc_mmc_set_idle(void)
+ 	cmd.cmdidx = 0;
+ 	cmd.cmdarg = 0;
+ 	cmd.resp_type = MMC_RSP_NONE;
+-	if (!dmmc_send_cmd(&cmd)) {
++	if (dmmc_send_cmd(&cmd,NULL)) {
+ 		return 1;
+ 	}
+ 	return 0;
+@@ -121,31 +213,433 @@ static int dmmc_send_if_cond(void)
+ 	cmd.cmdidx = SD_CMD_SEND_IF_COND;
+ 	cmd.resp_type = MMC_RSP_R7;
+ 	cmd.cmdarg = 0x1aa;
+-	if (!dmmc_send_cmd(&cmd)) {
++	
++	if (dmmc_send_cmd(&cmd,NULL)) {
+ 		printf("zz %s cmd error\n", __func__);
++		return 1;
+ 	}
+ 
+ 	if ((cmd.response[0] & 0xff) != 0xaa)
+ 		return UNUSABLE_ERR;
+ 	else
+ 		version = SD_VERSION_2;
++	
++	return 0;
++}
++
++static int dmmc_read_blocks(void *dst, lbaint_t start,
++			   lbaint_t blkcnt)
++{
++	struct dmmc_cmd cmd;
++	struct dmmc_data data;
++
++	if (blkcnt > 1)
++		cmd.cmdidx = MMC_CMD_READ_MULTIPLE_BLOCK;
++	else
++		cmd.cmdidx = MMC_CMD_READ_SINGLE_BLOCK;
++	cmd.cmdarg= start;
++	cmd.resp_type = MMC_RSP_R1;
++
++	data.dest = dst;
++	data.blocks = blkcnt;
++	data.blocksize = host.read_bl_len;
++	data.flags = MMC_DATA_READ;
++	if (dmmc_send_cmd(&cmd, &data)) {
++		printf("zz %s read error\n", __func__);
++		return 0;
++	}
++
++	return 0;
++}
++
++void dmmc_set_ios(void)
++{
++	u32 ctrl;
++	/* Set bus width */
++	ctrl = dmmc_readb(SDHCI_HOST_CONTROL);
++	ctrl &= ~SDHCI_CTRL_8BITBUS;
++	if (host.bus_width == 4)
++		ctrl |= SDHCI_CTRL_4BITBUS;
++	else
++		ctrl &= ~SDHCI_CTRL_4BITBUS;
++
++	if (host.clock > 26000000)
++		ctrl |= SDHCI_CTRL_HISPD;
++	else
++		ctrl &= ~SDHCI_CTRL_HISPD;
++
++	dmmc_writeb(ctrl, SDHCI_HOST_CONTROL);
++}
++
++static int dmmc_mmc_start(void)
++{
++	struct dmmc_cmd cmd;
++	int err;
++	struct dmmc_data data;
++	int freq, mult;
++	
++	/* Put the Card in Identify Mode */
++	cmd.cmdidx = MMC_CMD_ALL_SEND_CID; /* cmd not supported in spi */
++	cmd.resp_type = MMC_RSP_R2;
++	cmd.cmdarg = 0;
++	printf("host cid:%08x\n", cmd.response[0]);
++	err = dmmc_send_cmd(&cmd,NULL);
++	if (err)
++		return err;
++
++	host.cid = cmd.response[0];
++
++	cmd.cmdidx = SD_CMD_SEND_RELATIVE_ADDR;
++	cmd.cmdarg = 0;
++	cmd.resp_type = MMC_RSP_R6;
++	err = dmmc_send_cmd(&cmd,NULL);
++	if (err)
++		return err;
++	host.rca  = (cmd.response[0] >>16) & 0xffff;
++
++	/* Get the Card-Specific Data */
++	cmd.cmdidx = MMC_CMD_SEND_CSD;
++	cmd.resp_type = MMC_RSP_R2;
++	cmd.cmdarg = host.rca << 16;
++	err = dmmc_send_cmd(&cmd,NULL);
++	if (err)
++		return err;
++
++	err = dmmc_send_status(200);
++	if (err)
++		return err;
++	host.csd[0] = cmd.response[0];
++	host.csd[1] = cmd.response[1];
++	host.csd[2] = cmd.response[2];
++	host.csd[3] = cmd.response[3];
++
++	freq = fbase[(cmd.response[0] & 0x7)];
++	mult = multipliers[((cmd.response[0] >> 3) & 0xf)];
++	host.tran_speed = freq * mult;
++	host.write_bl_len = 1 << ((cmd.response[3] >> 22) & 0xf);
++	host.read_bl_len = 1 << ((cmd.response[1] >> 16) & 0xf);
++	printf(" host.tran_speed:%08x  host.write_bl_len:%08x  host.read_bl_len:%08x \n"  ,(u32)host.tran_speed  ,(u32)host.write_bl_len  ,(u32)host.read_bl_len);
++
++	LDBG("put cart to transfer mode\n");
++	/* Select the card, and put it into Transfer Mode */
++	cmd.cmdidx = MMC_CMD_SELECT_CARD;
++	cmd.resp_type = MMC_RSP_R1;
++	cmd.cmdarg = host.rca << 16;
++	err = dmmc_send_cmd(&cmd,NULL);
++	if (err)
++		return err;
++#if 0
++	csize = (mmc->csd[1] & 0x3ff) << 2
++			| (mmc->csd[2] & 0xc0000000) >> 30;
++	cmult = (mmc->csd[2] & 0x00038000) >> 15;
++#endif
++	sd_change_freq();
++	if (host.card_caps & MMC_MODE_4BIT) {
++		cmd.cmdidx = MMC_CMD_APP_CMD;
++		cmd.resp_type = MMC_RSP_R1;
++		cmd.cmdarg = host.rca << 16;
++
++		err = dmmc_send_cmd(&cmd, NULL);
++		if (err)
++			return err;
++
++		LDBG("set cart bus width\n");
++		cmd.cmdidx = SD_CMD_APP_SET_BUS_WIDTH;
++		cmd.resp_type = MMC_RSP_R1;
++		cmd.cmdarg = 2;
++		err = dmmc_send_cmd(&cmd, NULL);
++		if (err)
++			return err;
++
++		//mmc_set_bus_width(mmc, 4);
++		dmmc_set_ios();
++		if (host.card_caps & MMC_MODE_HS)
++			host.tran_speed = 50000000;
++		else
++			host.tran_speed = 25000000;
++	}
++
++	//mmc_set_clock(mmc, mmc->tran_speed);
++	LDBG("set card clock to high \n");
++	dmmc_set_ios();
++	return 0;
++}
++
++static int dmmc_switch(int mode, int group, u8 value, u8 *resp)
++{
++	struct dmmc_cmd cmd;
++	struct dmmc_data data;
++
++	/* Switch the frequency */
++	cmd.cmdidx = SD_CMD_SWITCH_FUNC;
++	cmd.resp_type = MMC_RSP_R1;
++	cmd.cmdarg = (mode << 31) | 0xffffff;
++	cmd.cmdarg &= ~(0xf << (group * 4));
++	cmd.cmdarg |= value << (group * 4);
++
++	data.dest = (char *)resp;
++	data.blocksize = 64;
++	data.blocks = 1;
++	data.flags = MMC_DATA_READ;
++
++	return dmmc_send_cmd(&cmd, &data);
++}
++
++static int sd_change_freq()
++{
++	int err;
++	struct dmmc_cmd cmd;
++	struct dmmc_data data;
++	ALLOC_CACHE_ALIGN_BUFFER(uint, scr, 2);
++	ALLOC_CACHE_ALIGN_BUFFER(uint, switch_status, 16);
++	int timeout;
++
++	/* Read the SCR to find out if this card supports higher speeds */
++	cmd.cmdidx = MMC_CMD_APP_CMD;
++	cmd.resp_type = MMC_RSP_R1;
++	cmd.cmdarg = host.rca << 16;
++
++	err = dmmc_send_cmd(&cmd,NULL);
++
++	if (err)
++		return err;
++
++	cmd.cmdidx = SD_CMD_APP_SEND_SCR;
++	cmd.resp_type = MMC_RSP_R1;
++	cmd.cmdarg = 0;
++
++	timeout = 3;
++retry_scr:
++	data.dest = (char *)scr;
++	data.blocksize = 8;
++	data.blocks = 1;
++	data.flags = MMC_DATA_READ;
++
++	err = dmmc_send_cmd(&cmd, &data);
++	if (err) {
++		if (timeout--)
++			goto retry_scr;
++
++		return err;
++	}
++	host.scr[0] = __be32_to_cpu(scr[0]);
++	host.scr[1] = __be32_to_cpu(scr[1]);
++	switch ((host.scr[0] >> 24) & 0xf) {
++		case 0:
++			host.version = SD_VERSION_1_0;
++			printf("card SD_VERSION_1_0 \n");
++			break;
++		case 1:
++			host.version = SD_VERSION_1_10;
++			printf("card SD_VERSION_1_10 \n");
++			break;
++		case 2:
++			host.version = SD_VERSION_2;
++			if ((host.scr[0] >> 15) & 0x1) {
++				host.version = SD_VERSION_3;
++				printf("card SD_VERSION_3 \n");
++				break;
++			}
++			printf("card SD_VERSION_2 \n");
++			break;
++		default:
++			host.version = SD_VERSION_1_0;
++			printf("card SD_VERSION_1 \n");
++			break;
++	}
++
++	if (host.scr[0] & SD_DATA_4BIT) {
++		host.card_caps |= MMC_MODE_4BIT;
++		host.bus_width = 4;
++	}
++
++	/* Version 1.0 doesn't support switching */
++	if (host.version == SD_VERSION_1_0)
++		return 0;
++
++	timeout = 4;
++	while (timeout--) {
++		err = dmmc_switch(SD_SWITCH_CHECK, 0, 1,
++				(u8 *)switch_status);
++
++		if (err)
++			return err;
++
++		/* The high-speed function is busy.  Try again */
++		if (!(__be32_to_cpu(switch_status[7]) & SD_HIGHSPEED_BUSY))
++			break;
++	}
++
++	/* If high-speed isn't supported, we return */
++	if (!(__be32_to_cpu(switch_status[3]) & SD_HIGHSPEED_SUPPORTED)) {
++		printf("zz %s high speed not support\n", __func__);
++		return 0;
++	}
++
++	/*
++	 * If the host doesn't support SD_HIGHSPEED, do not switch card to
++	 * HIGHSPEED mode even if the card support SD_HIGHSPPED.
++	 * This can avoid furthur problem when the card runs in different
++	 * mode between the host.
++	 */
++	if (!((host.host_caps & MMC_MODE_HS_52MHz) &&
++		(host.host_caps & MMC_MODE_HS)))
++		return 0;
++
++	err = dmmc_switch(SD_SWITCH_SWITCH, 0, 1, (u8 *)switch_status);
++	if ((__be32_to_cpu(switch_status[4]) & 0x0f000000) == 0x01000000) {
++		printf("card swith to hs speed\n");
++		host.card_caps |= MMC_MODE_HS;
++	}
++
+ 	return 0;
+ }
+ 
++static int dmmc_send_status(int timeout)
++{
++	struct dmmc_cmd cmd;
++	int err, retries = 5;
++
++	cmd.cmdidx = MMC_CMD_SEND_STATUS;
++	cmd.resp_type = MMC_RSP_R1;
++	cmd.cmdarg = host.rca << 16;
++
++	do {
++		err = dmmc_send_cmd(&cmd,NULL);
++		if (!err) {
++			if ((cmd.response[0] & MMC_STATUS_RDY_FOR_DATA) &&
++			    (cmd.response[0] & MMC_STATUS_CURR_STATE) !=
++			     MMC_STATE_PRG)
++				break;
++			else if (cmd.response[0] & MMC_STATUS_MASK) {
++				printf("Status Error: 0x%08X\n",
++					cmd.response[0]);
++				return COMM_ERR;
++			}
++		} else if (--retries < 0)
++			return err;
++
++		udelay(1000);
++
++	} while (timeout--);
++
++	if (timeout <= 0) {
++		printf("Timeout waiting card ready\n");
++		return TIMEOUT;
++	}
++
++	return 0;
++}
+ static void dmmc_cmd_done(struct dmmc_cmd *cmd)
+ {
+-	cmd->response[0] = dmmc_readl(SDHCI_RESPONSE);
++	int i;
++	if (cmd->resp_type & MMC_RSP_136) {
++		/* CRC is stripped so we need to do some shifting. */
++		for (i = 0; i < 4; i++) {
++			cmd->response[i] = dmmc_readl(SDHCI_RESPONSE + (3-i)*4) << 8;
++			if (i != 3)
++				cmd->response[i] |= dmmc_readb((SDHCI_RESPONSE + (3-i)*4-1));
++		}
++	} else {
++		cmd->response[0] = dmmc_readl(SDHCI_RESPONSE);
++	}
+ }
+ 
+-int dmmc_send_cmd(struct dmmc_cmd *cmd)
++static void dmmc_transfer_pio(struct mmc_data *data)
++{
++	int i;
++	char *offs;
++	for (i = 0; i < data->blocksize; i += 4) {
++		offs = data->dest + i;
++		if (data->flags == MMC_DATA_READ)
++			*(u32 *)offs = dmmc_readl(SDHCI_BUFFER);
++		else
++			dmmc_writel(*(u32 *)offs, SDHCI_BUFFER);
++	}
++}
++
++static int dmmc_transfer_data( struct dmmc_data *data, unsigned int start_addr)
++{
++	unsigned int stat, rdy, mask, timeout, block = 0;
++	unsigned char ctrl;
++	ctrl = dmmc_readb(SDHCI_HOST_CONTROL);
++	ctrl &= ~SDHCI_CTRL_DMA_MASK;
++	dmmc_writeb(ctrl, SDHCI_HOST_CONTROL);
++
++	timeout = 1000000;
++	rdy = SDHCI_INT_SPACE_AVAIL | SDHCI_INT_DATA_AVAIL;
++	mask = SDHCI_DATA_AVAILABLE | SDHCI_SPACE_AVAILABLE;
++	do {
++		stat = dmmc_readl(SDHCI_INT_STATUS);
++		if (stat & SDHCI_INT_ERROR) {
++			printf("%s: Error detected in status(0x%X)!\n",
++			       __func__, stat);
++			return -1;
++		}
++
++		if (stat & rdy) {
++			if (!(dmmc_readl(SDHCI_PRESENT_STATE) & mask))
++				continue;
++			dmmc_writel(rdy, SDHCI_INT_STATUS);
++			dmmc_transfer_pio(data);
++			data->dest += data->blocksize;
++			if (++block >= data->blocks)
++				break;
++		}
++
++		if (stat & SDHCI_INT_DMA_END) {
++			printf(" stat:%08x \n"  ,(u32)stat);
++			dmmc_writel(SDHCI_INT_DMA_END, SDHCI_INT_STATUS);
++			start_addr &= ~(SDHCI_DEFAULT_BOUNDARY_SIZE - 1);
++			start_addr += SDHCI_DEFAULT_BOUNDARY_SIZE;
++			dmmc_writel(start_addr, SDHCI_DMA_ADDRESS);
++		}
++		if (timeout-- > 0)
++			udelay(10);
++		else {
++			printf("%s: Transfer data timeout\n", __func__);
++			return -1;
++		}
++	} while (!(stat & SDHCI_INT_DATA_END));
++
++	return 0;
++}
++
++#define ALIGN_SIZE 128
++int dmmc_send_cmd(struct dmmc_cmd *cmd, struct dmmc_data *data)
+ {
+ #define CONFIG_SDHCI_CMD_DEFAULT_TIMEOUT 200
+-	unsigned int stat = 0;
+-	u32 mask, flags, start;
++	unsigned int stat = 0,ret=0;
++	int trans_bytes = 0, is_aligned = 1;
++	unsigned int time = 0, start_addr = 0;
++	u32 mask, flags, start, mode;
+ 	unsigned int cmd_timeout = CONFIG_SDHCI_CMD_DEFAULT_TIMEOUT;
++	char *temp = NULL;
++	char *ptr  = NULL;
++	char *aligned_dest;
++
++	/* got a read commnand, alloc aligned buffer for the DMA to write to */
++	if ((data) && (data->flags & MMC_DATA_READ) && (data->dest)) {
++		if (((unsigned int)data->dest) & (ALIGN_SIZE - 1)) {
++			ptr = malloc((data->blocks * data->blocksize) + ALIGN_SIZE-1);
++			if (!ptr) {
++				printf("%s: mmc malloc fail!\n", __func__);
++				return 1;
++			}
++			aligned_dest = (char *) (((uintptr_t)ptr + ALIGN_SIZE-1) & ~(ALIGN_SIZE-1));
++			temp = data->dest;
++			data->dest = aligned_dest;
++		}
++	}
+ 
+-	mask = SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT;
+ 	dmmc_writel(SDHCI_INT_ALL_MASK, SDHCI_INT_STATUS);
++	mask = SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT;
++
++	/* We shouldn't wait for data inihibit for stop commands, even
++	   though they might use busy signaling */
++	if (cmd->cmdidx == MMC_CMD_STOP_TRANSMISSION)
++		mask &= ~SDHCI_DATA_INHIBIT;
++
+ 	if (dmmc_readl(SDHCI_PRESENT_STATE) & mask) {
+ 		printf("mmc busy\n");
+ 		return 1;
+@@ -166,10 +660,44 @@ int dmmc_send_cmd(struct dmmc_cmd *cmd)
+ 		flags |= SDHCI_CMD_CRC;
+ 	if (cmd->resp_type & MMC_RSP_OPCODE)
+ 		flags |= SDHCI_CMD_INDEX;
+-	/*if (data)
++	if (data)
+ 		flags |= SDHCI_CMD_DATA;
+-	*/
++	
++	/* Set Transfer mode regarding to data flag */
++	if (data != NULL) {
++		dmmc_writeb(0xe, SDHCI_TIMEOUT_CONTROL);
++		mode = SDHCI_TRNS_BLK_CNT_EN;
++		trans_bytes = data->blocks * data->blocksize;
++		if (data->blocks > 1)
++			mode |= SDHCI_TRNS_MULTI;
++
++		if (data->flags == MMC_DATA_READ)
++			mode |= SDHCI_TRNS_READ;
++
++		if (data->flags == MMC_DATA_READ)
++			start_addr = (unsigned int)data->dest;
++		else
++			start_addr = (unsigned int)data->src;
++		//if ((host->quirks & SDHCI_QUIRK_32BIT_DMA_ADDR) &&
++#if 0
++		if ((start_addr & 0x7) != 0x0) {
++			is_aligned = 0;
++			start_addr = (unsigned int)aligned_buffer;
++			if (data->flags != MMC_DATA_READ)
++				memcpy(aligned_buffer, data->src, trans_bytes);
++		}
++#endif
++
++		dmmc_writel(start_addr, SDHCI_DMA_ADDRESS);
++		mode |= SDHCI_TRNS_DMA;
++		dmmc_writew(SDHCI_MAKE_BLKSZ(SDHCI_DEFAULT_BOUNDARY_ARG,
++				data->blocksize),
++				SDHCI_BLOCK_SIZE);
++		dmmc_writew(data->blocks, SDHCI_BLOCK_COUNT);
++		dmmc_writew(mode, SDHCI_TRANSFER_MODE);
++	}
+ 
++	flush_cache(start_addr, trans_bytes);
+ 	dmmc_writel(cmd->cmdarg, SDHCI_ARGUMENT);
+ 	dmmc_writew(SDHCI_MAKE_CMD(cmd->cmdidx, flags), SDHCI_COMMAND);
+ 
+@@ -186,20 +714,61 @@ int dmmc_send_cmd(struct dmmc_cmd *cmd)
+ 	if ((stat & mask) == mask) {
+ 		dmmc_cmd_done(cmd);
+ 		dmmc_writel(mask, SDHCI_INT_STATUS);
++		ret = 0;
+ 	} else {
+ 		if (get_timer(start) >= CONFIG_SDHCI_CMD_DEFAULT_TIMEOUT) {
+-			//printf("cmd timeout\n");
++			printf("cmd timeout\n");
+ 		} else {
+-			//printf("mmc cmd error\n");
++			printf("mmc cmd error\n");
+ 		}
+ 		return 1;
+ 	}
++
++	if (!ret && data) {
++		ret = dmmc_transfer_data(data, start_addr);
++		if (!ret) {
++			/* copy back to original dest address */
++			if ((data) && (data->flags & MMC_DATA_READ) && ptr) {
++				memcpy(temp, data->dest, (data->blocks * data->blocksize));
++				data->dest = temp;
++				free(ptr);
++			}
++		} else {
++			printf("zz %s data tran error\n", __func__);
++		}
++	}
+ 	return 0;
+ }
+ 
+ static int dmmc_mmc_init(void)
+ {
+ 	u32 ret;
++	int timeout;
++
++	host.host_caps = MMC_MODE_HS | MMC_MODE_HS_52MHz | MMC_MODE_4BIT;
++	//power sdcard
++	dmmc_writeb(0xf, SDHCI_POWER_CONTROL);
++	/* Enable only interrupts served by the SD controller */
++	dmmc_writeb(SDHCI_INT_DATA_MASK | SDHCI_INT_CMD_MASK, SDHCI_INT_ENABLE);
++	/* Mask all sdhci interrupt sources */
++	dmmc_writel(0x0, SDHCI_SIGNAL_ENABLE);
++	//set hot control clk
++	dmmc_writew(0, SDHCI_CLOCK_CONTROL);
++	dmmc_writew(0x0000ffc1, SDHCI_CLOCK_CONTROL);
++
++	/* Wait max 20 ms */
++	timeout = 20;
++	while (1) {
++		if (timeout == 0) {
++			//printf("%s: Internal clock never stabilised.\n",__func__);
++			//return -1;
++			break;
++		}
++		timeout--;
++		udelay(1000);
++	}
++	dmmc_writew(0x0000ffc7, SDHCI_CLOCK_CONTROL);
++
+ 	ret = dmmc_mmc_set_idle();
+ 	if (ret)
+ 		goto error1;
+@@ -212,8 +781,10 @@ static int dmmc_mmc_init(void)
+ 	}
+ 
+ 	printf("find card\n");
++	dmmc_mmc_start();
+ 	return 0;
+ error1:
++	printf("set card ilde failed\n");
+ 	return 1;
+ error2:
+ 	printf("not find card\n");
+@@ -230,6 +801,16 @@ static int ddo_mmcops(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
+ 		dmmc_mmc_init();
+ 	} else if (strcmp(argv[1], "reinit") == 0) {
+ 		printf("dmmc reinit\n");
++	} else if (strcmp(argv[1], "read") == 0) {
++		int idx = 2;
++		u32 blk, cnt;
++		void *addr;
++
++		addr = simple_strtoul(argv[idx], NULL, 16);
++		blk = simple_strtoul(argv[idx+1], NULL, 16);
++		cnt = simple_strtoul(argv[idx + 2], NULL, 16);
++		printf("blk:%08x  cnt:%08x addr:%08x\n", (u32)blk  ,(u32)cnt, (u32)addr);
++		dmmc_read_blocks(addr, blk,cnt);
+ 	} else if (strcmp(argv[1], "dump") == 0) {
+ 		dmmc_regs_dump();
+ 	} else if (strcmp(argv[1], "cmd") == 0) {
+@@ -238,8 +819,9 @@ static int ddo_mmcops(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
+ 			u32 blk, cnt;
+ 			void *addr;
+ 
+-			blk = simple_strtoul(argv[idx], NULL, 16);
+-			cnt = simple_strtoul(argv[idx + 1], NULL, 16);
++			addr = simple_strtoul(argv[idx], NULL, 16);
++			blk = simple_strtoul(argv[idx+1], NULL, 16);
++			cnt = simple_strtoul(argv[idx + 2], NULL, 16);
+ 			flush_cache((ulong)addr, cnt * 512); /* FIXME */
+ 
+ 		} else if (strcmp(argv[2], "write") == 0) {
+@@ -255,11 +837,10 @@ static int ddo_mmcops(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
+ 			return 1;
+ 		}
+ 	} else if (strcmp(argv[1], "version") == 0) {
+-			u32 regaddr;
+-			regaddr = (u32)mmc_regs + 0x1f8;
+-			printf(" regaddr:%08x val:%08x\n" ,(u32)regaddr, readl(regaddr));
+-			regaddr = (u32)mmc_regs + 0x1fc;
+-			printf(" regaddr:%08x val:%08x\n" ,(u32)regaddr, readl(regaddr));
++		u32 regaddr;
++		regaddr = (u32)mmc_regs + 0x1f8;
++		regaddr = (u32)mmc_regs + 0x1fc;
++		printf(" regaddr:%08x val:%08x\n" ,(u32)regaddr, readl(regaddr));
+ 	} else if (strcmp(argv[1], "reg") == 0) {
+ 		if (strcmp(argv[2], "r") == 0) {
+ 			int idx = 3;
+-- 
+1.9.1
+
