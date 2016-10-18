@@ -1,7 +1,7 @@
 From 06b2522f9871da4010dee2863bd26b165910cbe5 Mon Sep 17 00:00:00 2001
 From: czou <cao.zou@windriver.com>
 Date: Fri, 22 Apr 2016 16:01:26 +0800
-Subject: [PATCH 14/14] add dma map
+Subject: [PATCH 14/15] add dma map
 
 Signed-off-by: czou <cao.zou@windriver.com>
 ---

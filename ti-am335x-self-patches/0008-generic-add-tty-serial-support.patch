@@ -1,7 +1,7 @@
 From 364c6d58c368b50de1342d5a1d6fc6211c6f5086 Mon Sep 17 00:00:00 2001
 From: czou <cao.zou@windriver.com>
 Date: Tue, 1 Mar 2016 09:46:38 +0800
-Subject: [PATCH 08/14] generic: add tty serial support
+Subject: [PATCH 08/15] generic: add tty serial support
 
 Signed-off-by: czou <cao.zou@windriver.com>
 ---

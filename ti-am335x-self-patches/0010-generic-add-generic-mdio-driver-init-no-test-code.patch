@@ -1,7 +1,7 @@
 From 1285a35279a21aa1da2872c51a31ff28f8760b64 Mon Sep 17 00:00:00 2001
 From: czou <cao.zou@windriver.com>
 Date: Mon, 7 Mar 2016 15:19:50 +0800
-Subject: [PATCH 10/14] generic: add generic mdio driver init no test code
+Subject: [PATCH 10/15] generic: add generic mdio driver init no test code
 
 Signed-off-by: czou <cao.zou@windriver.com>
 ---

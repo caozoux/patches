@@ -1,7 +1,7 @@
 From 306b9713723e6422ea2f8370ec280a496aefd373 Mon Sep 17 00:00:00 2001
 From: czou <cao.zou@windriver.com>
 Date: Thu, 17 Mar 2016 09:45:51 +0800
-Subject: [PATCH 11/14] add interface code
+Subject: [PATCH 11/15] add interface code
 
 Signed-off-by: czou <cao.zou@windriver.com>
 ---
