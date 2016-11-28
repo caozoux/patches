@@ -1,0 +1,217 @@
+From 29db1f91d3ce09a65e6196a56125b4aac84e1ac3 Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Thu, 20 Oct 2016 16:46:03 +0800
+Subject: [PATCH 18/26] generic:interrupt: update interrupt for adding softirq
+ irqchip mask unmask
+
+here update the arch interrupt control mode, add softirq function,
+fixed the error registers value for irq chip enable/disable, am335x
+has four banks, so here 4 different register should be setted.
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ arch/arm/mach-generic/interrupt.c | 108 +++++++++++++++++++++++---------------
+ 1 file changed, 66 insertions(+), 42 deletions(-)
+
+diff --git a/arch/arm/mach-generic/interrupt.c b/arch/arm/mach-generic/interrupt.c
+index b8db7bc..72f1094 100644
+--- a/arch/arm/mach-generic/interrupt.c
++++ b/arch/arm/mach-generic/interrupt.c
+@@ -11,6 +11,7 @@
+ #include <linux/of_address.h>
+ #include <linux/of_irq.h>
+ #include <linux/irq.h>
++#include <linux/generic_dbg.h>
+ #include <asm/setup.h>
+ #include "plat.h"
+ 
+@@ -44,7 +45,6 @@ static struct gen_irq_bank {
+ };
+ struct irq_domain *domain;
+ 
+-
+ static void intc_bank_write_reg(u32 val, struct gen_irq_bank *bank, u16 reg)
+ {
+ 	__raw_writel(val, bank->base_reg + reg);
+@@ -55,26 +55,50 @@ static u32 intc_bank_read_reg(struct gen_irq_bank *bank, u16 reg)
+ 	return __raw_readl(bank->base_reg + reg);
+ }
+ 
+-static void irq_dump(struct gen_irq_bank *bank)
++void generic_irq_soft_set(u32 hwirq)
++{
++	struct gen_irq_bank *bank = irq_banks + 0;
++	__raw_writel(1<<(hwirq%32), bank->base_reg+INTC_ISR_SET0+(hwirq/32)*0x20);
++}
++
++void generic_irq_dump(void)
+ {
+-	early_print("INTC_REVISION	:%08x\n", intc_bank_read_reg(bank,INTC_REVISION));
+-	early_print("INTC_SYSCONFIG	:%08x\n", intc_bank_read_reg(bank,INTC_SYSCONFIG));		
+-	early_print("INTC_SYSSTATUS	:%08x\n", intc_bank_read_reg(bank,INTC_SYSSTATUS));		
+-	early_print("INTC_SIR	:%08x\n", intc_bank_read_reg(bank,INTC_SIR));
+-	early_print("INTC_CONTROL	:%08x\n", intc_bank_read_reg(bank,INTC_CONTROL));
+-	early_print("INTC_PROTECTION	:%08x\n", intc_bank_read_reg(bank,INTC_PROTECTION));
+-	early_print("INTC_IDLE	:%08x\n", intc_bank_read_reg(bank,INTC_IDLE));
+-	early_print("INTC_THRESHOLD	:%08x\n", intc_bank_read_reg(bank,INTC_THRESHOLD));
+-	early_print("INTC_MIR0:%08x\n", intc_bank_read_reg(bank,INTC_MIR0));
+-	early_print("INTC_MIR_CLEAR:%08x\n", intc_bank_read_reg(bank,INTC_MIR_CLEAR0));
+-	early_print("INTC_MIR_SET:%08x\n", intc_bank_read_reg(bank,INTC_MIR_SET0));
+-	early_print("INTC_PENDING_IRQ:%08x\n", intc_bank_read_reg(bank,INTC_PENDING_IRQ0));
++	struct gen_irq_bank *bank = irq_banks;
++	printk("INTC_REVISION	:%08x\n", intc_bank_read_reg(bank,INTC_REVISION));
++	printk("INTC_SYSCONFIG	:%08x\n", intc_bank_read_reg(bank,INTC_SYSCONFIG));
++	printk("INTC_SYSSTATUS	:%08x\n", intc_bank_read_reg(bank,INTC_SYSSTATUS));
++	printk("INTC_SIR	:%08x\n", intc_bank_read_reg(bank,INTC_SIR));
++	printk("INTC_CONTROL	:%08x\n", intc_bank_read_reg(bank,INTC_CONTROL));
++	printk("INTC_PROTECTION	:%08x\n", intc_bank_read_reg(bank,INTC_PROTECTION));
++	printk("INTC_IDLE	:%08x\n", intc_bank_read_reg(bank,INTC_IDLE));
++	printk("INTC_THRESHOLD	:%08x\n", intc_bank_read_reg(bank,INTC_THRESHOLD));
++	printk("INTC_MIR0:%08x\n", intc_bank_read_reg(bank,INTC_MIR0));
++	printk("INTC_MIR_CLEAR:%08x\n", intc_bank_read_reg(bank,INTC_MIR_CLEAR0));
++	printk("INTC_MIR_SET:%08x\n", intc_bank_read_reg(bank,INTC_MIR_SET0));
++	printk("INTC_PENDING_IRQ0:%08x\n", intc_bank_read_reg(bank,INTC_PENDING_IRQ0));
++	printk("INTC_MIR0:%08x\n", intc_bank_read_reg(bank,INTC_MIR0));
++	printk("INTC_MIR_SET0:%08x\n", intc_bank_read_reg(bank,INTC_MIR_SET0));
++
++	printk("INTC_PENDING_IRQ1:%08x\n", intc_bank_read_reg(bank,INTC_PENDING_IRQ0+0x20*1));
++	printk("INTC_MIR1:%08x\n", intc_bank_read_reg(bank,INTC_MIR0+0x20*1));
++	printk("INTC_MIR_SET1:%08x\n", intc_bank_read_reg(bank,INTC_MIR_SET0+0x20*1));
++
++	printk("INTC_PENDING_IRQ2:%08x\n", intc_bank_read_reg(bank,INTC_PENDING_IRQ0+0x20*2));
++	printk("INTC_MIR2:%08x\n", intc_bank_read_reg(bank,INTC_MIR0+0x20*2));
++	printk("INTC_MIR_SET2:%08x\n", intc_bank_read_reg(bank,INTC_MIR_SET0+0x20*2));
++
++	printk("INTC_PENDING_IRQ3:%08x\n", intc_bank_read_reg(bank,INTC_PENDING_IRQ0+0x20*3));
++	printk("INTC_MIR3:%08x\n", intc_bank_read_reg(bank,INTC_MIR0+0x20*3));
++	printk("INTC_MIR_SET3:%08x\n", intc_bank_read_reg(bank,INTC_MIR_SET0+0x20*3));
+ }
+ 
++//just higher priority interrupt can interrupt
++#define NEWIRQAGR (1)
+ static void omap_ack_irq(struct irq_data *d)
+ {
+-	intc_bank_write_reg(0x1, &irq_banks[0], INTC_CONTROL);
++	intc_bank_write_reg(NEWIRQAGR, &irq_banks[0], INTC_CONTROL);
+ }
++
+ static void omap_mask_ack_irq(struct irq_data *d)
+ {
+ 	irq_gc_mask_disable_reg(d);
+@@ -105,7 +129,6 @@ gen_alloc_gc(void __iomem *base, unsigned int irq_start, unsigned int num)
+ {
+ 	struct irq_chip_generic *gc;
+ 	struct irq_chip_type *ct;
+-
+ 	gc = irq_alloc_generic_chip("INTC", 1, irq_start, base,
+ 					handle_level_irq);
+ 	ct = gc->chip_types;
+@@ -114,8 +137,8 @@ gen_alloc_gc(void __iomem *base, unsigned int irq_start, unsigned int num)
+ 	ct->chip.irq_unmask = irq_gc_unmask_enable_reg;
+ 	ct->chip.flags |= IRQCHIP_SKIP_SET_WAKE;
+ 
+-	ct->regs.enable = INTC_MIR_CLEAR0;
+-	ct->regs.disable = INTC_MIR_SET0;
++	ct->regs.enable = INTC_MIR_CLEAR0+(irq_start/32)*0x20;
++	ct->regs.disable = INTC_MIR_SET0+(irq_start/32)*0x20;
+ 	irq_setup_generic_chip(gc, IRQ_MSK(num), IRQ_GC_INIT_MASK_CACHE,
+ 				IRQ_NOREQUEST | IRQ_NOPROBE, 0);
+ }
+@@ -123,9 +146,8 @@ gen_alloc_gc(void __iomem *base, unsigned int irq_start, unsigned int num)
+ static irqreturn_t omap2_sw_interrupt(int irq, void *dev_id)
+ {
+ 	u32 status = intc_bank_read_reg(irq_banks + 0, INTC_ISR_SET0);
+-	early_print("%s INTC_PENDING_IRQ:%08x %08x\n", __func__, intc_bank_read_reg(irq_banks + 0, INTC_PENDING_IRQ0), status);
+-	//intc_bank_write_reg(status, irq_banks + 0, INTC_ISR_CLEAR0);
+ 	g_timer_dump();
++	printk("zz %s irqbank0:%08x\n", __func__, status);
+ 	return IRQ_HANDLED;
+ }
+ 
+@@ -138,41 +160,42 @@ static struct irqaction omap2_sw_irq = {
+ 
+ void __init omap_init_irq(u32 base, int nr_irqs)
+ {
+-	int j, irq_base;
+-	u32 irqnr;
++	int i, j, irq_base;
+ 	struct gen_irq_bank *bank = irq_banks + 0;
++	void __iomem *base_reg;
++
++	base_reg = ioremap(base, SZ_4K);
++
++	if (!base_reg) {
++		early_print("irq control map failed\n");
++		return;
++	}
+ 
+ 	irq_base = irq_alloc_descs(-1, 0, nr_irqs, 0);
+ 	if (irq_base < 0) {
+ 		early_print("Couldn't allocate IRQ numbers\n");
+-		irq_base = 0;
++		return;
+ 	}
+ 
+-	bank->base_reg = ioremap(base, SZ_4K);
+-	bank->nr_irqs = nr_irqs;
++	for (i = 0; i < ARRAY_SIZE(irq_banks); i++) {
++		struct gen_irq_bank *bank = irq_banks + i;
++		bank->base_reg = base_reg;
++		for (j = 0; j < bank->nr_irqs; j += 32) {
++			gen_alloc_gc(bank->base_reg, j + irq_base, 32);
++		}
++	}
++	omap_irq_bank_init_one(bank);
++
+ 	domain = irq_domain_add_legacy(NULL, nr_irqs, irq_base, 0,
+ 				   &irq_domain_simple_ops, NULL);
+ 
+-	omap_irq_bank_init_one(bank);
+-	for (j = 0; j < bank->nr_irqs; j += 32)
+-		gen_alloc_gc(bank->base_reg + j, j + irq_base, 32);
+ 	early_print("allocate IRQ numbers:%d\n", bank->nr_irqs);
+-#if 1
+ 
+-	irqnr = irq_find_mapping(domain, 2);
+-	if (irqnr)
+-		setup_irq(irqnr, &omap2_sw_irq);
+ 
+ 	intc_bank_write_reg(0xfffffff, bank, INTC_PENDING_IRQ0);
+ 	intc_bank_write_reg(0xfffffff, bank, INTC_MIR_CLEAR0);
+-	//intc_bank_write_reg(0x04, bank, INTC_ISR_SET0);
+-	//irq_dump(bank);
+-#else
+-	//setup_irq(clkev.irq, &omap2_gp_timer_irq);
+-#endif
+ }
+ 
+-
+ void generic_intc_handle_irq(struct pt_regs *regs)
+ {
+ 	u32 irqnr;
+@@ -200,10 +223,8 @@ out:
+ 
+ 		irqnr = readl_relaxed(base_addr + INTCPS_SIR_IRQ_OFFSET);
+ 		irqnr &= ACTIVEIRQ_MASK;
+-		//early_print("IRQ :%d", irqnr);
+ 		if (irqnr) {
+ 			irqnr = irq_find_mapping(domain, irqnr);
+-			//early_print("domain IRQ :%d\n", irqnr);
+ 			handle_IRQ(irqnr, regs);
+ 		}
+ 	} while (irqnr);
+@@ -211,6 +232,9 @@ out:
+ 
+ void test_irq(void)
+ {
+-	struct gen_irq_bank *bank = irq_banks + 0;
+-	intc_bank_write_reg(0x04, bank, INTC_ISR_SET0);
++	u32 irqnr;
++	irqnr = irq_find_mapping(domain, 42);
++	printk("hwirq 42 irqnr:%08x \n"  ,(u32)irqnr);
++	if (irqnr)
++		setup_irq(irqnr, &omap2_sw_irq);
+ }
+-- 
+1.9.1
+

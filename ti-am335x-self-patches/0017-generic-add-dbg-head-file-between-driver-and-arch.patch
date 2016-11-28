@@ -1,0 +1,40 @@
+From 287b54559b3db18efa8c6c93af3f2c2389577f12 Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Thu, 20 Oct 2016 16:15:59 +0800
+Subject: [PATCH 17/26] generic: add dbg head file between driver and arch
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ arch/arm/mach-generic/generic.c | 1 +
+ include/linux/generic_dbg.h     | 7 +++++++
+ 2 files changed, 8 insertions(+)
+ create mode 100644 include/linux/generic_dbg.h
+
+diff --git a/arch/arm/mach-generic/generic.c b/arch/arm/mach-generic/generic.c
+index b1421c2..22f2742 100644
+--- a/arch/arm/mach-generic/generic.c
++++ b/arch/arm/mach-generic/generic.c
+@@ -17,6 +17,7 @@
+ #include <asm/mach/arch.h>
+ #include <asm/mach/map.h>
+ #include <asm/setup.h>
++#include <linux/generic_dbg.h>
+ #include "plat.h"
+ 
+ #define OMAP_INTR_CON_BASE 0x48200000
+diff --git a/include/linux/generic_dbg.h b/include/linux/generic_dbg.h
+new file mode 100644
+index 0000000..d6f5ee3
+--- /dev/null
++++ b/include/linux/generic_dbg.h
+@@ -0,0 +1,7 @@
++#ifndef __GENERIC_DBG_H__
++#define __GENERIC_DBG_H__
++void generic_irq_dump(void);
++void generic_irq_soft_set(u32 hwirq);
++void test_irq(void);
++#endif
++
+-- 
+1.9.1
+

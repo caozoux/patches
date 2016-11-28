@@ -1,0 +1,116 @@
+From 18fe47cf1d53230524158188bac9a56949ffb204 Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Thu, 24 Nov 2016 15:08:12 +0800
+Subject: [PATCH 24/26] 2 rx package can work a little
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ drivers/net/ethernet/generic_net.c      | 24 +++++++++++++-----------
+ drivers/net/ethernet/generic_net.h      |  1 +
+ drivers/net/ethernet/generic_transfer.c |  2 +-
+ 3 files changed, 15 insertions(+), 12 deletions(-)
+
+diff --git a/drivers/net/ethernet/generic_net.c b/drivers/net/ethernet/generic_net.c
+index 795ed6e..7f6e335 100644
+--- a/drivers/net/ethernet/generic_net.c
++++ b/drivers/net/ethernet/generic_net.c
+@@ -30,6 +30,7 @@
+ #include "generic_net.h"
+ 
+ #define napi_tx_to_priv(napi)	container_of(napi, struct gen_net_data, napi_tx)
++#define napi_rx_to_priv(napi)	container_of(napi, struct gen_net_data, napi)
+ #define CPSW_POLL_WEIGHT	64
+ #define  MAX_ALE_ENTRY (1024)
+ #define PKT_MAX			(1500 + 14 + 4 + 4)
+@@ -217,7 +218,6 @@ void gen_phy_adjust_link(struct net_device *ndev)
+ 	printk("zz %s \n", __func__);
+ 	if (pdata->phydev->link) {
+ 		__raw_writel(0x8021, &pdata->slive_regs->mac_control);
+-		printk("pdata->slive_regs->mac_control:%08x \n"  ,(u32)&pdata->slive_regs->mac_control);
+ 	}
+ }
+ 
+@@ -244,11 +244,11 @@ static int cpsw_ndo_open(struct net_device *ndev)
+ 	//gen_tran_test(pdata);
+ 	//fifo_loopback_test(pdata);
+ 
+-	//napi_enable(&pdata->napi);
+-	//napi_enable(&pdata->napi_tx);
++	napi_enable(&pdata->napi);
++	napi_enable(&pdata->napi_tx);
+ 	gen_cpsw_cppi_register_rx(pdata, gen_handle_rx);
+ 	for (i = 0; i < MAX_RX_CNT; i++) {
+-		skb = netdev_alloc_skb_ip_align(pdata->ndev, GEN_RX_MAX);
++		skb = __netdev_alloc_skb_ip_align(pdata->ndev, GEN_RX_MAX, GFP_KERNEL);
+ 		if (!skb) {
+ 			dev_err(&pdata->pdev->dev, "skb alloc failed\n");
+ 			continue;
+@@ -424,16 +424,16 @@ error:
+ static irqreturn_t gen_intr(int __always_unused irq, void *data)
+ {
+ 	struct gen_net_data *pdata = (struct gen_net_data *)data;
++
+ 	printk("zz %s \n", __func__);
+ 	cpdma_ctlr_eoi(pdata, 0, EOI_RX);
+-#if 0
+ 	gen_intr_queue(pdata, DMA_FROM_DEVICE);
++	cpdma_ctlr_eoi(pdata, 1, EOI_RX);
++
+ 	if (netif_running(pdata->ndev)) {
+ 		napi_schedule(&pdata->napi);
+-		return IRQ_HANDLED;
+ 	}
+-#endif
+-	cpdma_ctlr_eoi(pdata, 1, EOI_RX);
++
+ 	return IRQ_HANDLED;
+ }
+ 
+@@ -456,13 +456,15 @@ static irqreturn_t gen_tx_intr(int __always_unused irq, void *data)
+ 
+ static int cpsw_poll(struct napi_struct *napi, int budget)
+ {
+-	struct gen_net_data *pdata= napi_tx_to_priv(napi);
+-	gen_intr_queue(pdata, DMA_FROM_DEVICE);
++	struct gen_net_data *pdata= napi_rx_to_priv(napi);
++	printk("zz %s \n", __func__);
++	gen_process_queue(pdata, 1);
++	napi_complete(napi);
+ }
+ 
+ static int cpsw_tx_poll(struct napi_struct *napi, int budget)
+ {
+-	struct gen_net_data *pdata= napi_tx_to_priv(napi);
++	struct gen_net_data *pdata= napi_rx_to_priv(napi);
+ 	int			num_tx;
+ 
+ 	num_tx = 1;
+diff --git a/drivers/net/ethernet/generic_net.h b/drivers/net/ethernet/generic_net.h
+index ef1ab75..64a2781 100644
+--- a/drivers/net/ethernet/generic_net.h
++++ b/drivers/net/ethernet/generic_net.h
+@@ -148,6 +148,7 @@ void proccess_dma_chan(struct gen_net_data *pdata);
+ int gen_intr_queue(struct gen_net_data *pdata, int directory);
+ int gen_submit_data(struct gen_net_data *pdata, void *token, void *buf, int size, int dirc);
+ void gen_cpsw_cppi_register_rx(struct gen_net_data *pdata, void (*handle_rx)(struct gen_net_data *pdata, void *token, int size));
++int gen_process_queue(struct gen_net_data *pdata, int directory);
+ void dump_cpsw_control(void *base);
+ void dump_cpsw_SL12(void *base);
+ void dump_cpsw_ale(void *base);
+diff --git a/drivers/net/ethernet/generic_transfer.c b/drivers/net/ethernet/generic_transfer.c
+index e8ad5af..7c4c069 100644
+--- a/drivers/net/ethernet/generic_transfer.c
++++ b/drivers/net/ethernet/generic_transfer.c
+@@ -483,8 +483,8 @@ int gen_intr_queue(struct gen_net_data *pdata, int directory)
+ 			len = __raw_readl(&desc->sw_len);
+ 			dma_unmap_single(&pdata->pdev->dev, desc->hw_buffer, len, dma_dirc);
+ 			//gen_cpdma_free_desc(pdata, desc);
+-			list_add_tail(&chan->list,&g_tran_pool->rx_handle_list);
+ 			list_del(&chan->list);
++			list_add_tail(&chan->list,&g_tran_pool->rx_handle_list);
+ 		}
+ 	}
+ 
+-- 
+1.9.1
+

@@ -1,0 +1,95 @@
+From 612c68c23512995be9210f7b6528cd80a8a5e414 Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Thu, 20 Oct 2016 16:15:10 +0800
+Subject: [PATCH 16/26] arch:generic: add net platform irq resource
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ arch/arm/mach-generic/board-generic.c | 60 ++++++++++++++++++++++++++++++++++-
+ 1 file changed, 59 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/mach-generic/board-generic.c b/arch/arm/mach-generic/board-generic.c
+index a2f2665..a4bacc0 100644
+--- a/arch/arm/mach-generic/board-generic.c
++++ b/arch/arm/mach-generic/board-generic.c
+@@ -55,8 +55,44 @@ static struct platform_device generic_mdio_device = {
+ 	.resource	= generic_mdio_resources,
+ };
+ 
++static struct resource net_resources[] = {
++	/*{
++		.name	= "edma_cc0",
++		.start	= DA8XX_TPCC_BASE,
++		.end	= DA8XX_TPCC_BASE + SZ_32K - 1,
++		.flags	= IORESOURCE_MEM,
++	},*/
++	{
++		.name	= "3PGSWRXTHR0",
++		.start	= 0x38,
++		.flags	= IORESOURCE_IRQ,
++	},
++	{
++		.name	= "3PGSWRXINT0",
++		.start	= 0x39,
++		.flags	= IORESOURCE_IRQ,
++	},
++	{
++		.name	= "3PGSWTXTHR0",
++		.start	= 0x3a,
++		.flags	= IORESOURCE_IRQ,
++	},
++	{
++		.name	= "3PGSWMISC0",
++		.start	= 0x3b,
++		.flags	= IORESOURCE_IRQ,
++	},
++};
++
+ static struct platform_device generic_net_device = {
+-	.name                   = "generic_net",
++	.name           = "generic_net",
++	.id             = 0,
++	.num_resources	= ARRAY_SIZE(net_resources),
++	.resource	= net_resources,
++};
++
++static struct platform_device generic_dmtimer= {
++	.name                   = "dmtimer",
+ 	/*
+ 	.id                     = 0,
+ 	.num_resources	= ARRAY_SIZE(generic_mdio_resources),
+@@ -64,9 +100,31 @@ static struct platform_device generic_net_device = {
+ 	*/
+ };
+ 
++static struct resource generic_wdt_resources[] = {
++	{
++		.start	= 0x44e35000,
++		.end	= 0x44e35000+ 0x1000,
++		.flags	= IORESOURCE_MEM,
++	},
++	{
++		.name	= "generic_wdt_interrupt",
++		.start	= 91,
++		.flags	= IORESOURCE_IRQ,
++	},
++};
++
++static struct platform_device generic_watchdog= {
++	.name 					= "gen_wtd",
++	.id                     = 0,
++	.num_resources	= ARRAY_SIZE(generic_wdt_resources),
++	.resource	= generic_wdt_resources,
++};
++
+ void __init board_generic_init(void)
+ {
+ 	platform_device_register(&generic_uart_device);
+ 	platform_device_register(&generic_mdio_device);
++	platform_device_register(&generic_dmtimer);
++	platform_device_register(&generic_watchdog);
+ 	platform_device_register(&generic_net_device);
+ }
+-- 
+1.9.1
+

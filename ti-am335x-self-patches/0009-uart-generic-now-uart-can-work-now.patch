@@ -1,7 +1,7 @@
 From 39aca9bdca6937576837ba694bab77804dd1d09c Mon Sep 17 00:00:00 2001
 From: czou <cao.zou@windriver.com>
 Date: Wed, 2 Mar 2016 15:47:29 +0800
-Subject: [PATCH 09/15] uart: generic: now uart can work now
+Subject: [PATCH 09/26] uart: generic: now uart can work now
 
 Signed-off-by: czou <cao.zou@windriver.com>
 ---

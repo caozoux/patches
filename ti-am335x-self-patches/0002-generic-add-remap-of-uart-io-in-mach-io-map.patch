@@ -1,7 +1,7 @@
 From 7fdf646ff308a744a6429703284bd9efc25731e3 Mon Sep 17 00:00:00 2001
 From: czou <cao.zou@windriver.com>
 Date: Thu, 25 Feb 2016 16:28:50 +0800
-Subject: [PATCH 02/15] generic: add remap of uart io in mach io map
+Subject: [PATCH 02/26] generic: add remap of uart io in mach io map
 
 eary_print will be invalid when booting into devicemap, tlb will
 flush again, so need to add remap in machine iomap

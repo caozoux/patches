@@ -1,0 +1,298 @@
+From 7b12aa20ba67afb22ec8e537e2098b5b826efffc Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Mon, 28 Nov 2016 09:08:59 +0800
+Subject: [PATCH 26/26] generic:net: DHCP now ok with generic_net
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ drivers/net/ethernet/generic_ale.c      |  1 -
+ drivers/net/ethernet/generic_net.c      | 48 ++++++++++++++++++++++++++-------
+ drivers/net/ethernet/generic_net.h      |  3 +++
+ drivers/net/ethernet/generic_transfer.c | 22 ++++++++++-----
+ 4 files changed, 58 insertions(+), 16 deletions(-)
+
+diff --git a/drivers/net/ethernet/generic_ale.c b/drivers/net/ethernet/generic_ale.c
+index 83268d9..802d8fa 100644
+--- a/drivers/net/ethernet/generic_ale.c
++++ b/drivers/net/ethernet/generic_ale.c
+@@ -197,7 +197,6 @@ int cpsw_ale_add_ucast(struct cpsw_ale_regs *ale_regs, const u8 *addr,
+ 	if (idx < 0)
+ 		return -ENOMEM;
+ 
+-	printk("cpsw_ale_add_ucast idx:%0d %08x %08x %08x\n", idx, addr[0], addr[1], addr[2]);
+ 	cpsw_ale_write(ale_regs, idx, ale_entry);
+ 	return 0;
+ }
+diff --git a/drivers/net/ethernet/generic_net.c b/drivers/net/ethernet/generic_net.c
+index b49a563..8c23e70 100644
+--- a/drivers/net/ethernet/generic_net.c
++++ b/drivers/net/ethernet/generic_net.c
+@@ -26,12 +26,15 @@
+ #include <net/busy_poll.h>
+ #include <linux/pinctrl/consumer.h>
+ #include <linux/if_ether.h>
++#include <linux/delay.h>
+ 
+ #include "generic_net.h"
+ 
++#define PHY_ID "7c0f1"
+ #define napi_tx_to_priv(napi)	container_of(napi, struct gen_net_data, napi_tx)
+ #define napi_rx_to_priv(napi)	container_of(napi, struct gen_net_data, napi)
+ #define CPSW_POLL_WEIGHT	64
++#define CPSW_MIN_PACKET_SIZE	60
+ #define  MAX_ALE_ENTRY (1024)
+ #define PKT_MAX			(1500 + 14 + 4 + 4)
+ 
+@@ -215,9 +218,13 @@ static void gen_cpsw_control_init(struct net_device *ndev)
+ void gen_phy_adjust_link(struct net_device *ndev)
+ {
+ 	struct gen_net_data *pdata = netdev_priv(ndev);
+-	printk("zz %s \n", __func__);
++	struct phy_device	*phy = pdata->phydev;
++	printk(" phy->link:%08x  phy->speed:%08x \n"  ,(u32)phy->link  ,(u32)phy->speed);
+ 	if (pdata->phydev->link) {
+ 		__raw_writel(0x8021, &pdata->slive_regs->mac_control);
++		netif_carrier_on(ndev);
++		if (netif_running(ndev))
++			netif_wake_queue(ndev);
+ 	}
+ }
+ 
+@@ -235,18 +242,21 @@ static int cpsw_ndo_open(struct net_device *ndev)
+ 	struct sk_buff *skb;
+ 	int i;
+ 
++
++	netif_carrier_off(ndev);
+ 	phy_init(ndev);
+ 	gen_cpsw_control_init(ndev);
+ 	/* Bring the PHY up */
+-	phy_start(pdata->phydev);
+ 
+ 	gen_cppi_init(pdata, 0x4a100000);
+-	//gen_tran_test(pdata);
++	phy_start(pdata->phydev);
+ 	//fifo_loopback_test(pdata);
++	dev_info(&ndev->dev, "find phy id:%0x\n", pdata->phydev->phy_id);
+ 
+ 	napi_enable(&pdata->napi);
+ 	napi_enable(&pdata->napi_tx);
+ 	gen_cpsw_cppi_register_rx(pdata, gen_handle_rx);
++	gen_cppi_enable(pdata, 1);
+ 	for (i = 0; i < MAX_RX_CNT; i++) {
+ 		skb = __netdev_alloc_skb_ip_align(pdata->ndev, GEN_RX_MAX, GFP_KERNEL);
+ 		if (!skb) {
+@@ -270,6 +280,17 @@ static int cpsw_ndo_start_xmit (struct sk_buff *skb,
+ {
+ 	struct gen_net_data *pdata = netdev_priv(ndev);
+ 
++	if (skb_padto(skb, CPSW_MIN_PACKET_SIZE)) {
++		dev_err(pdata->dev, "packet pad failed\n");
++		ndev->stats.tx_dropped++;
++		return NETDEV_TX_OK;
++	}
++
++	if (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP)
++		skb_shinfo(skb)->tx_flags |= SKBTX_IN_PROGRESS;
++
++	skb_tx_timestamp(skb);
++
+ 	gen_submit_data(pdata, (void*)skb, skb->data, skb->len, DMA_TO_DEVICE);
+ 	return NETDEV_TX_OK;
+ }
+@@ -342,41 +363,49 @@ static const struct net_device_ops cpsw_netdev_ops = {
+ 
+ u32	gen_get_link(struct net_device *netdev)
+ {
++printk("zz %s \n", __func__);
+ 	return 0;
+ }
+ 
+ int	gen_get_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
+ {
++printk("zz %s \n", __func__);
+ 	return 0;
+ }
+ 
+ int	gen_set_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
+ {
++printk("zz %s \n", __func__);
+ 	return 0;
+ }
+ 
+ int	gen_get_coalesce(struct net_device *netdev, struct ethtool_coalesce *cmd)
+ {
++printk("zz %s \n", __func__);
+ 	return 0;
+ }
+ 
+ int	gen_set_coalesce(struct net_device *netdev, struct ethtool_coalesce *cls)
+ {
++printk("zz %s \n", __func__);
+ 	return 0;
+ }
+ 
+ void gen_get_drvinfo(struct net_device *netdev, struct ethtool_drvinfo *info)
+ {
++printk("zz %s \n", __func__);
+ }
+ 
+ void gen_get_ringparam(struct net_device *netdev,
+ 			 struct ethtool_ringparam *pra)
+ {
++printk("zz %s \n", __func__);
+ }
+ 
+ int	gen_set_ringparam(struct net_device *netdev,
+ 			 struct ethtool_ringparam *pra)
+ {
++printk("zz %s \n", __func__);
+ 	return 0;
+ }
+ 
+@@ -407,7 +436,7 @@ void gen_handle_rx(struct gen_net_data *pdata, void *token,  int len)
+ 		new_skb = skb;
+ 		goto error;	
+ 	} else {
+-		//skb_put(skb, len);
++		skb_put(skb, len);
+ 		skb->protocol = eth_type_trans(skb, pdata->ndev);
+ 		ndev->stats.rx_bytes += len;
+ 		ndev->stats.rx_packets++;
+@@ -424,7 +453,7 @@ static irqreturn_t gen_intr(int __always_unused irq, void *data)
+ {
+ 	struct gen_net_data *pdata = (struct gen_net_data *)data;
+ 
+-	printk("zz %s \n", __func__);
++	//printk("zz %s \n", __func__);
+ 	cpdma_ctlr_eoi(pdata, 0, EOI_RX);
+ 	gen_intr_queue(pdata, DMA_FROM_DEVICE);
+ 	cpdma_ctlr_eoi(pdata, 1, EOI_RX);
+@@ -440,7 +469,7 @@ static irqreturn_t gen_tx_intr(int __always_unused irq, void *data)
+ {
+ 	struct gen_net_data *pdata = (struct gen_net_data *)data;
+ 
+-	printk("zz %s \n", __func__);
++	//printk("zz %s \n", __func__);
+ 	cpdma_ctlr_eoi(pdata, 0, EOI_TX);
+ 	gen_intr_queue(pdata, DMA_TO_DEVICE);
+ 	cpdma_ctlr_eoi(pdata, 1, EOI_TX);
+@@ -456,7 +485,7 @@ static irqreturn_t gen_tx_intr(int __always_unused irq, void *data)
+ static int cpsw_poll(struct napi_struct *napi, int budget)
+ {
+ 	struct gen_net_data *pdata= napi_rx_to_priv(napi);
+-	printk("zz %s \n", __func__);
++	//printk("zz %s \n", __func__);
+ 	gen_process_queue(pdata, 1);
+ 	napi_complete(napi);
+ }
+@@ -506,7 +535,7 @@ static int generic_net_probe(struct platform_device *pdev)
+ 			dev_err(&pdev->dev, "can't register irq %d\n", irq);
+ 			return 1;
+ 		}
+-		dev_info(&pdev->dev, "irq %d register\n", irq);
++		//dev_info(&pdev->dev, "irq %d register\n", irq);
+ 		k++;
+ 	}
+ 
+@@ -534,6 +563,7 @@ static int generic_net_probe(struct platform_device *pdev)
+ 	g_data->cpts_regs = g_data->base+CPSW_CPTS;
+ 	g_data->ndev = ndev;
+ 	g_data->pdev = pdev;
++	g_data->dev = &ndev->dev;
+ 
+ #define CPSW_POLL_WEIGHT	64
+ 	//netif_napi_add(ndev, &g_data->napi, cpsw_poll, CPSW_POLL_WEIGHT);
+@@ -555,7 +585,7 @@ static int generic_net_probe(struct platform_device *pdev)
+ 		return -ENODEV;
+ 	}
+ 
+-	printk("zz %s register netdev\n", __func__);
++	dev_info(g_data->dev, "register\n");
+ 	return 0;
+ }
+ 
+diff --git a/drivers/net/ethernet/generic_net.h b/drivers/net/ethernet/generic_net.h
+index 64a2781..9064b10 100644
+--- a/drivers/net/ethernet/generic_net.h
++++ b/drivers/net/ethernet/generic_net.h
+@@ -125,6 +125,7 @@ struct gen_net_data
+ 
+ 	struct platform_device		*pdev;
+ 	struct net_device		*ndev;
++	struct device		*dev;
+ 	struct phy_device *phydev;
+ 	u32 tx_irq;
+ 	u32 rx_irq;
+@@ -148,6 +149,8 @@ void proccess_dma_chan(struct gen_net_data *pdata);
+ int gen_intr_queue(struct gen_net_data *pdata, int directory);
+ int gen_submit_data(struct gen_net_data *pdata, void *token, void *buf, int size, int dirc);
+ void gen_cpsw_cppi_register_rx(struct gen_net_data *pdata, void (*handle_rx)(struct gen_net_data *pdata, void *token, int size));
++/*enable the cpdma tx and rx control*/
++void gen_cppi_enable(struct gen_net_data *pdata, u32 enable);
+ int gen_process_queue(struct gen_net_data *pdata, int directory);
+ void dump_cpsw_control(void *base);
+ void dump_cpsw_SL12(void *base);
+diff --git a/drivers/net/ethernet/generic_transfer.c b/drivers/net/ethernet/generic_transfer.c
+index 2cc8e49..dbc4dd3 100644
+--- a/drivers/net/ethernet/generic_transfer.c
++++ b/drivers/net/ethernet/generic_transfer.c
+@@ -24,7 +24,7 @@
+ 
+ #include "generic_net.h"
+ 
+-#define DBG(fmt,arg...) do {printk(fmt,##arg);}while(0)
++#define DBG(fmt,arg...) do {}while(0)
+ #define INFO(fmt,arg...) do {printk(fmt,##arg);}while(0)
+ #define ERR(fmt,arg...) do {printk(fmt,##arg);}while(0)
+ /* DMA Registers */
+@@ -415,7 +415,7 @@ int gen_submit_data(struct gen_net_data *pdata, void *token, void *buf, int size
+ 	__raw_writel(DMA_CTRL_OWN|DMA_CTRL_EOQ|size, &desc->hw_mode);
+ 	__raw_writel((u32)desc_to_phy(desc), &prev_desc->hw_next);
+ 	list_add_tail(&chan_list->list, list);
+-	dump_dbg_desc(desc);
++	//dump_dbg_desc(desc);
+ 
+ 	return 0;
+ out:
+@@ -484,12 +484,11 @@ int gen_intr_queue(struct gen_net_data *pdata, int directory)
+ 	list_for_each_entry_safe(chan, chan_n, chan_list, list) {
+ 		desc = chan->dma_chan_desc;
+ 		hwmode = __raw_readl(&desc->hw_mode);
+-		//if (hwmode | DMA_CTRL_EOQ) {
+ 		if (hwmode & DMA_CTRL_OWN) {
+ 			return 0;
+ 		} else {
+ 			//DBG("zz %s proccess desc:%08x\n", __func__, (u32)desc);
+-			dump_dbg_desc(desc);
++			//dump_dbg_desc(desc);
+ 			gen_cpsw_write((u32)desc_to_phy(desc), (u32)regs);
+ 			buf = (void*)__raw_readl(&desc->sw_buffer);
+ 			len = __raw_readl(&desc->sw_len);
+@@ -552,10 +551,21 @@ int gen_cppi_init(struct gen_net_data *pdata, u32 phy_addr)
+ 	gen_cpsw_crtl_pool_init(pdata);
+ 	gen_dma_control_init(g_tran_pool->dma_regs);
+ 	gen_cpdma_chan_rvinit(pdata);
+-	__raw_writel(0x01, &pdata->wr_regs->tx_en);
+-	__raw_writel(0x01, &pdata->wr_regs->rx_en);
++	//__raw_writel(0x01, &pdata->wr_regs->tx_en);
++	//__raw_writel(0x01, &pdata->wr_regs->rx_en);
+ 	return 0;
+ }
++void gen_cppi_enable(struct gen_net_data *pdata, u32 enable)
++{
++	if (enable) {
++		__raw_writel(0x01, &pdata->wr_regs->tx_en);
++		__raw_writel(0x01, &pdata->wr_regs->rx_en);
++	} else {
++		__raw_writel(0x00, &pdata->wr_regs->tx_en);
++		__raw_writel(0x00, &pdata->wr_regs->rx_en);
++	}
++
++}
+ 
+ void gen_tran_test(struct gen_net_data *pdata)
+ {
+-- 
+1.9.1
+

@@ -1,7 +1,7 @@
 From 07de2bccd4a750c693bdb84e67b471a688175990 Mon Sep 17 00:00:00 2001
 From: czou <cao.zou@windriver.com>
 Date: Fri, 26 Feb 2016 10:43:22 +0800
-Subject: [PATCH 04/15] generic: test interrupt is ok by using SW triger
+Subject: [PATCH 04/26] generic: test interrupt is ok by using SW triger
 
 Signed-off-by: czou <cao.zou@windriver.com>
 ---

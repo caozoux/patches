@@ -1,7 +1,7 @@
 From 72f3a1cdeffe0addf6b87bf71114c8ba3b665c17 Mon Sep 17 00:00:00 2001
 From: czou <cao.zou@windriver.com>
 Date: Tue, 18 Oct 2016 09:43:07 +0800
-Subject: [PATCH 15/15] DMA transfer work well
+Subject: [PATCH 15/26] DMA transfer work well
 
 Signed-off-by: czou <cao.zou@windriver.com>
 ---

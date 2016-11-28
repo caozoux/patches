@@ -1,0 +1,911 @@
+From 133ef91ab5aab63259204e0239eef020c37e6d8c Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Thu, 24 Nov 2016 14:09:15 +0800
+Subject: [PATCH 23/26] update data
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ drivers/net/ethernet/generic_ale.c      |   1 -
+ drivers/net/ethernet/generic_dbg.c      |  89 ++++++++++++-
+ drivers/net/ethernet/generic_net.c      | 194 +++++++++++++++++++---------
+ drivers/net/ethernet/generic_net.h      |  15 ++-
+ drivers/net/ethernet/generic_transfer.c | 220 ++++++++++++++++++++++----------
+ 5 files changed, 387 insertions(+), 132 deletions(-)
+
+diff --git a/drivers/net/ethernet/generic_ale.c b/drivers/net/ethernet/generic_ale.c
+index bab1d4e..83268d9 100644
+--- a/drivers/net/ethernet/generic_ale.c
++++ b/drivers/net/ethernet/generic_ale.c
+@@ -225,7 +225,6 @@ int cpsw_ale_add_mcast(struct cpsw_ale_regs *priv, const u8 *addr,
+ 	if (idx < 0)
+ 		return -ENOMEM;
+ 
+-	printk("cpsw_ale_add_mcast idx:%0d %08x %08x %08x\n", idx, ale_entry[0], ale_entry[1], ale_entry[2]);
+ 	cpsw_ale_write(priv, idx, ale_entry);
+ 	return 0;
+ }
+diff --git a/drivers/net/ethernet/generic_dbg.c b/drivers/net/ethernet/generic_dbg.c
+index e91e093..1937a82 100644
+--- a/drivers/net/ethernet/generic_dbg.c
++++ b/drivers/net/ethernet/generic_dbg.c
+@@ -286,13 +286,13 @@ printk("SL2_TX_GAP:%08x\n",__raw_readl(base+SL2_TX_GAP));
+ #if 1
+ printk("Good_RX_FRAME:%08x\n",__raw_readl(base+Good_RX_FRAME));
+ printk("Broadcast_RX_FRAME:%08x\n",__raw_readl(base+Broadcast_RX_FRAME));
+-printk("Multicast_RX_FRAME  :%08x\n",__raw_readl(base+Multicast_RX_FRAME  ));
+-printk("Pause_RX_FRAME  :%08x\n",__raw_readl(base+Pause_RX_FRAME  ));
++printk("Multicast_RX_FRAME  :%08x\n",__raw_readl(base+Multicast_RX_FRAME));
++printk("Pause_RX_FRAME  :%08x\n",__raw_readl(base+Pause_RX_FRAME));
+ printk("Rx_CRC_ERR:%08x\n",__raw_readl(base+Rx_CRC_ERR));
+ printk("Rx_ALIGN_ERR:%08x\n",__raw_readl(base+Rx_ALIGN_ERR));
+-printk("Oversize_RX_FRAME    :%08x\n",__raw_readl(base+Oversize_RX_FRAME    ));
++printk("Oversize_RX_FRAME    :%08x\n",__raw_readl(base+Oversize_RX_FRAME));
+ printk("Rx_JAB:%08x\n",__raw_readl(base+Rx_JAB));
+-printk("Undersize_RX_FRAME    :%08x\n",__raw_readl(base+Undersize_RX_FRAME    ));
++printk("Undersize_RX_FRAME    :%08x\n",__raw_readl(base+Undersize_RX_FRAME));
+ printk("Rx_FRAG:%08x\n",__raw_readl(base+Rx_FRAG));
+ printk("Rx_OCT:%08x\n",__raw_readl(base+Rx_OCT));
+ printk("Good_TX_FRAME:%08x\n",__raw_readl(base+Good_TX_FRAME));
+@@ -358,3 +358,84 @@ printk("RX0_FRAMBUFFER:%08x\n",__raw_readl(base+CPSW_CPDMA+0xe0));
+ #endif
+ }
+ 
++void dump_ale_entry(u32 *data)
++{
++	u8 *p, *s;
++	u8 i;
++	p = (u8*)data;
++	s = p;
++
++	p = s+6;
++	printk("macaddr:\n");
++	for (i = 0; i < 6; ++i) {
++		printk("%02x ", p[i]);
++	}
++	printk("\n");
++	printk("entry_type:%02x\n", p[8]);
++	printk("port mask:%02x\n", p[11]);
++}
++
++void dump_cpsw_control(void *base)
++{
++	//#define CPSW_SS 	  0x4A100000
++	printk("D_VER:%08x\n",__raw_readl(base+D_VER));
++	printk("CONTROL:%08x\n",__raw_readl(base+CONTROL));
++	printk("SOFT_RESET:%08x\n",__raw_readl(base+SOFT_RESET));
++	printk("STAT_PORT_EN:%08x\n",__raw_readl(base+STAT_PORT_EN));
++	printk("PTYPE:%08x\n",__raw_readl(base+PTYPE));
++	printk("SOFT_IDLE:%08x\n",__raw_readl(base+SOFT_IDLE));
++	printk("THRU_RATE:%08x\n",__raw_readl(base+THRU_RATE));
++	printk("GAP_THRESH:%08x\n",__raw_readl(base+GAP_THRESH));
++	printk("TX_START_WDS:%08x\n",__raw_readl(base+TX_START_WDS));
++	printk("FLOW_CONTROL:%08x\n",__raw_readl(base+FLOW_CONTROL));
++	printk("VLAN_LTYPE:%08x\n",__raw_readl(base+VLAN_LTYPE));
++	printk("TS_LTYPE:%08x\n",__raw_readl(base+TS_LTYPE));
++	printk("DLR_LTYPE:%08x\n",__raw_readl(base+DLR_LTYPE));
++}
++
++void dump_cpsw_SL12(void *base)
++{
++	//#define CPSW_SL1      0x4A100D80
++	printk("SL1_IDVER:%08x\n",__raw_readl(base+SL1_IDVER));
++	printk("SL1_MACCONTROL:%08x\n",__raw_readl(base+SL1_MACCONTROL));
++	printk("SL1_MACSTATUS:%08x\n",__raw_readl(base+SL1_MACSTATUS));
++	printk("SL1_SOFT_RESET:%08x\n",__raw_readl(base+SL1_SOFT_RESET));
++	printk("SL1_RX_MAXLEN:%08x\n",__raw_readl(base+SL1_RX_MAXLEN));
++	printk("SL1_BOFFTEST:%08x\n",__raw_readl(base+SL1_BOFFTEST));
++	printk("SL1_RX_PAUSE:%08x\n",__raw_readl(base+SL1_RX_PAUSE));
++	printk("SL1_TX_PAUSE:%08x\n",__raw_readl(base+SL1_TX_PAUSE));
++	printk("SL1_EMCONTROL:%08x\n",__raw_readl(base+SL1_EMCONTROL));
++	printk("SL1_RX_PRI_MAP:%08x\n",__raw_readl(base+SL1_RX_PRI_MAP));
++	printk("SL1_TX_GAP:%08x\n",__raw_readl(base+SL1_TX_GAP));
++	//#define CPSW_SL2      0x4A100DC0
++	printk("SL2_IDVER:%08x\n",__raw_readl(base+SL2_IDVER));
++	printk("SL2_MACCONTROL:%08x\n",__raw_readl(base+SL2_MACCONTROL));
++	printk("SL2_MACSTATUS:%08x\n",__raw_readl(base+SL2_MACSTATUS));
++	printk("SL2_SOFT_RESET:%08x\n",__raw_readl(base+SL2_SOFT_RESET));
++	printk("SL2_RX_MAXLEN:%08x\n",__raw_readl(base+SL2_RX_MAXLEN));
++	printk("SL2_BOFFTEST:%08x\n",__raw_readl(base+SL2_BOFFTEST));
++	printk("SL2_RX_PAUSE:%08x\n",__raw_readl(base+SL2_RX_PAUSE));
++	printk("SL2_TX_PAUSE:%08x\n",__raw_readl(base+SL2_TX_PAUSE));
++	printk("SL2_EMCONTROL:%08x\n",__raw_readl(base+SL2_EMCONTROL));
++	printk("SL2_RX_PRI_MAP:%08x\n",__raw_readl(base+SL2_RX_PRI_MAP));
++	printk("SL2_TX_GAP:%08x\n",__raw_readl(base+SL2_TX_GAP));
++}
++
++void dump_cpsw_ale(void *base)
++{
++	printk("ALE_IDVER:%08x\n",__raw_readl(base+ALE_IDVER));
++	printk("ALE_CONTROL:%08x\n",__raw_readl(base+ALE_CONTROL));
++	printk("PRESCALE:%08x\n",__raw_readl(base+PRESCALE));
++	printk("UNKNOWN_VLAN:%08x\n",__raw_readl(base+UNKNOWN_VLAN));
++	printk("TBLCTL:%08x\n",__raw_readl(base+TBLCTL));
++	printk("TBLW2:%08x\n",__raw_readl(base+TBLW2));
++	printk("TBLW1:%08x\n",__raw_readl(base+TBLW1));
++	printk("TBLW0:%08x\n",__raw_readl(base+TBLW0));
++	printk("PORTCTL0:%08x\n",__raw_readl(base+PORTCTL0));
++	printk("PORTCTL1:%08x\n",__raw_readl(base+PORTCTL1));
++	printk("PORTCTL2:%08x\n",__raw_readl(base+PORTCTL2));
++	printk("PORTCTL3:%08x\n",__raw_readl(base+PORTCTL3));
++	printk("PORTCTL4:%08x\n",__raw_readl(base+PORTCTL4));
++	printk("PORTCTL5:%08x\n",__raw_readl(base+PORTCTL5));
++}
++
+diff --git a/drivers/net/ethernet/generic_net.c b/drivers/net/ethernet/generic_net.c
+index 1e9cce6..795ed6e 100644
+--- a/drivers/net/ethernet/generic_net.c
++++ b/drivers/net/ethernet/generic_net.c
+@@ -10,6 +10,7 @@
+ #include <linux/etherdevice.h>
+ #include <linux/netdevice.h>
+ #include <linux/net_tstamp.h>
++#include <linux/skbuff.h>
+ #include <linux/phy.h>
+ #include <linux/workqueue.h>
+ #include <linux/delay.h>
+@@ -29,6 +30,7 @@
+ #include "generic_net.h"
+ 
+ #define napi_tx_to_priv(napi)	container_of(napi, struct gen_net_data, napi_tx)
++#define CPSW_POLL_WEIGHT	64
+ #define  MAX_ALE_ENTRY (1024)
+ #define PKT_MAX			(1500 + 14 + 4 + 4)
+ 
+@@ -39,6 +41,9 @@
+ 			 ((mac)[2] << 16) | ((mac)[3] << 24))
+ #define mac_lo(mac)	(((mac)[4] << 0) | ((mac)[5] << 8))
+ 
++void gen_phy_adjust_link(struct net_device *ndev);
++void gen_handle_rx(struct gen_net_data *pdata, void *token,  int len);
++
+ static int gen_cpsw_reset(void __iomem *reg)
+ {
+     unsigned long timeout = jiffies + HZ;
+@@ -80,32 +85,71 @@ static void cpsw_set_slave_mac(struct gen_net_data *pdata, int port, u8 *mac_add
+ 
+ static void cpsw_slave_init(struct gen_net_data *pdata, int port)
+ {
++#if 0
+ 	struct cpsw_port_slave_regs * slave_port;
+-	//u8 mac_addr[6] = {0xff,0xff,0xff,0xff,0xff,0xff};
+-	u8 mac_addr[6] = {0x78, 0xa5,0x04, 0xed, 0xd9, 0xe6};
++	u8 mac_addr[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
++	u8 ethaddr_addr[6] = {0x78, 0xa5,0x04, 0xed, 0xd9, 0xe6};
+ 	slave_port = (struct cpsw_port_slave_regs*) ((void *)pdata->port_regs + port*0x100);
++
+ 	gen_cpsw_reset(&pdata->slive_regs->soft_reset);
+ 	/* setup priority mapping */
+ 	__raw_writel(0x76543210, &pdata->slive_regs->rx_pri_map);
++
+ 	__raw_writel(0x33221100, &slave_port->tx_pri_map);
+ 
+ 	/* setup max packet size, and mac address */
+ 	__raw_writel(PKT_MAX, &pdata->slive_regs->rx_maxlen);
+-	cpsw_set_slave_mac(pdata, 1, mac_addr);
++	cpsw_set_slave_mac(pdata, 1, ethaddr_addr);
+ 
+ 	//slave->mac_control = 0;	/* no link yet */
+ 
+ 	/* enable forwarding */
+ 	//slave_port = cpsw_get_slave_port(priv, slave->slave_num);
+ 	#define ALE_PORT_STATE_FORWARD (0x03)
+-	cpsw_ale_port_state(pdata->ale_regs, 0, ALE_PORT_STATE_FORWARD);
++	cpsw_ale_port_state(pdata->ale_regs, 1, ALE_PORT_STATE_FORWARD);
+ 
+ 	cpsw_ale_add_mcast(pdata->ale_regs, mac_addr, 1 << 1);
++#else
++	struct cpsw_port_slave_regs * slave_port;
++	u8 mac_addr[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
++	slave_port = (struct cpsw_port_slave_regs*) ((void *)pdata->port_regs + port*0x100);
++
++	gen_cpsw_reset(&pdata->slive_regs->soft_reset);
++	/* setup priority mapping */
++	__raw_writel(0x76543210, &pdata->slive_regs->rx_pri_map);
++	__raw_writel(0x33221100, &slave_port->tx_pri_map);
++	/* setup max packet size, and mac address */
++	__raw_writel(PKT_MAX, &pdata->slive_regs->rx_maxlen);
++	cpsw_set_slave_mac(pdata, 1, pdata->macaddr);
++	#define ALE_PORT_STATE_FORWARD (0x03)
++	cpsw_ale_port_state(pdata->ale_regs, port, ALE_PORT_STATE_FORWARD);
++	cpsw_ale_add_mcast(pdata->ale_regs, mac_addr, 1 << port);
++#endif
+ 
+ }
+ 
+-void phy_init(struct gen_net_data *pdata)
++void phy_init(struct net_device *ndev)
+ {
++	int ret;
++	struct gen_net_data *pdata = netdev_priv(ndev);
++	struct phy_device *phydev = NULL;
++
++	/* find the first phy */
++	phydev = phy_find_first(gen_mdio_data->bus);
++	if (!phydev) {
++		netdev_err(ndev, "no PHY found\n");
++		return -ENODEV;
++	}
++
++	ret = phy_connect_direct(ndev, phydev, &gen_phy_adjust_link,
++		PHY_INTERFACE_MODE_MII);
++
++	if (ret) {
++		netdev_err(ndev, "Could not attach to PHY\n");
++		return ret;
++	}
++
++	pdata->phydev = phydev;
+ 
+ }
+ 
+@@ -127,10 +171,12 @@ static inline void cpsw_ale_control(struct gen_net_data *pdata, int bit, int val
+ static void gen_cpsw_control_init(struct net_device *ndev)
+ {
+ 	struct gen_net_data *pdata = netdev_priv(ndev);
++	int  offset;
++	u32 tmp, port;
+ 
+ 	u8 mac_addr[6] = {0x98,0x90,0x96,0xc0,0xbe,0xc0};
+ 	u8 bmac_addr[6] = {0xff,0xff,0xff,0xff,0xff,0xff};
+-
++	memcpy(pdata->macaddr, mac_addr, 6);
+ 	//reset the control cpsw
+ 	gen_cpsw_reset(&pdata->regs->soft_reset);
+ 
+@@ -146,48 +192,32 @@ static void gen_cpsw_control_init(struct net_device *ndev)
+ 	/* disable priority elevation and enable statistics on all ports */
+ 	__raw_writel(0, &pdata->regs->ptype);
+ 
+-	#define ALE_PORT_STATE_FORWARD (0x03)
+-#if 0
+-	__raw_writel(BIT(1), &pdata->regs->stat_port_en);
+-#else
++	__raw_writel(0x01, &pdata->regs->stat_port_en);
+ 	__raw_writel(7, &pdata->regs->stat_port_en);
+-#endif
+-	cpsw_ale_port_state(pdata->ale_regs, 1, ALE_PORT_STATE_FORWARD);
++
++	//#define ALE_PORTCTL 0x40
++	#define ALE_PORT_STATE_FORWARD (0x03)
++	port = 0;
++	offset = ALE_PORTCTL + 4*port;
++	tmp  = __raw_readl((void*)pdata->ale_regs+offset);
++	tmp &= ~ALE_PORT_STATE_FORWARD;
++	tmp |= ALE_PORT_STATE_FORWARD;
++	__raw_writel(tmp, (void*)pdata->ale_regs+offset);
+ 
+ 	//init the entry table
+-	cpsw_ale_add_ucast(pdata->ale_regs, mac_addr, 1, 0);
+-	cpsw_ale_add_mcast(pdata->ale_regs, bmac_addr, 1);
++	cpsw_ale_add_ucast(pdata->ale_regs, pdata->macaddr, port, 1);
++	cpsw_ale_add_mcast(pdata->ale_regs, bmac_addr, 1<<port);
+ 
+ 	cpsw_slave_init(pdata, 1);
+-	//STAT_PORT_EN enable all port
+-	//__raw_writel(0x7, pdata->regs+ 0x0C);
+-	//FLOW_CONTROL enable port
+-	//__raw_writel(0x7, pdata->regs+ 0x24);
+-
+-#if 0
+-	//enable tx rx interrupt
+-	__raw_writel(0x01, &pdata->wr_regs->tx_en);
+-	__raw_writel(0x01, &pdata->wr_regs->rx_en);
+-	//__raw_writel(0x1, &pdata->wr_regs->rx_imax);
+-	//__raw_writel(0x1, &pdata->wr_regs->tx_imax);
+-	__raw_writel((0x3f<<16)|0xff, &pdata->wr_regs->int_control);
+-#endif
+-
+ }
+ 
+ void gen_phy_adjust_link(struct net_device *ndev)
+ {
+-
+ 	struct gen_net_data *pdata = netdev_priv(ndev);
++	printk("zz %s \n", __func__);
+ 	if (pdata->phydev->link) {
+ 		__raw_writel(0x8021, &pdata->slive_regs->mac_control);
+-#if 0
+-		gen_test(pdata, pdata->base+CPSW_CPDMA);
+-		while(1) {
+-				gen_cpsw_rx_poll(pdata);
+-				msleep(1000);
+-		}
+-#endif
++		printk("pdata->slive_regs->mac_control:%08x \n"  ,(u32)&pdata->slive_regs->mac_control);
+ 	}
+ }
+ 
+@@ -202,33 +232,30 @@ static void fifo_loopback_test(struct gen_net_data *pdata)
+ static int cpsw_ndo_open(struct net_device *ndev)
+ {
+ 	struct gen_net_data *pdata = netdev_priv(ndev);
+-	struct phy_device *phydev = NULL;
+-	int ret;
+-
+-	/* find the first phy */
+-	phydev = phy_find_first(gen_mdio_data->bus);
+-	if (!phydev) {
+-		netdev_err(ndev, "no PHY found\n");
+-		return -ENODEV;
+-	}
+-
+-	ret = phy_connect_direct(ndev, phydev, &gen_phy_adjust_link,
+-		PHY_INTERFACE_MODE_RGMII_TXID);
+-
+-	if (ret) {
+-		netdev_err(ndev, "Could not attach to PHY\n");
+-		return ret;
+-	}
++	struct sk_buff *skb;
++	int i;
+ 
+-	pdata->phydev = phydev;
++	phy_init(ndev);
+ 	gen_cpsw_control_init(ndev);
+ 	/* Bring the PHY up */
+ 	phy_start(pdata->phydev);
++
+ 	gen_cppi_init(pdata, 0x4a100000);
++	//gen_tran_test(pdata);
+ 	//fifo_loopback_test(pdata);
+ 
+ 	//napi_enable(&pdata->napi);
+-	napi_enable(&pdata->napi_tx);
++	//napi_enable(&pdata->napi_tx);
++	gen_cpsw_cppi_register_rx(pdata, gen_handle_rx);
++	for (i = 0; i < MAX_RX_CNT; i++) {
++		skb = netdev_alloc_skb_ip_align(pdata->ndev, GEN_RX_MAX);
++		if (!skb) {
++			dev_err(&pdata->pdev->dev, "skb alloc failed\n");
++			continue;
++		}
++		gen_submit_data(pdata, (void*)skb, skb->data, skb->len, DMA_FROM_DEVICE);
++	}
++
+ 	return 0;
+ }
+ 
+@@ -243,7 +270,7 @@ static int cpsw_ndo_start_xmit (struct sk_buff *skb,
+ {
+ 	struct gen_net_data *pdata = netdev_priv(ndev);
+ 
+-	gen_submit_data(pdata, skb->data, skb->len, 0);
++	//gen_submit_data(pdata, skb->data, skb->len, DMA_TO_DEVICE);
+ 	return NETDEV_TX_OK;
+ }
+ 
+@@ -365,9 +392,48 @@ const struct ethtool_ops generic_netdev_tool = {
+ 	.set_ringparam  = gen_set_ringparam,
+ };
+ 
++void gen_handle_rx(struct gen_net_data *pdata, void *token,  int len)
++{
++
++	struct sk_buff *skb = token;
++	struct net_device	*ndev = skb->dev;
++	struct sk_buff *new_skb;
++
++	//new_skb = __netdev_alloc_new_skb_ip_align(pdata->ndev,
++	new_skb = __netdev_alloc_skb_ip_align(pdata->ndev,
++			GEN_RX_MAX, GFP_KERNEL);
++
++	if (!new_skb) {
++		ndev->stats.rx_dropped++;
++		new_skb = skb;
++		goto error;	
++	} else {
++		skb_put(skb, len);
++		skb->protocol = eth_type_trans(skb, pdata->ndev);
++		ndev->stats.rx_bytes += len;
++		ndev->stats.rx_packets++;
++		netif_receive_skb(skb);
++	}
++
++	gen_submit_data(pdata, (void*)new_skb, new_skb->data, new_skb->len, DMA_FROM_DEVICE);
++	return;
++error:
++	dev_err(&pdata->pdev->dev, "skb alloc failed\n");
++}
++
+ static irqreturn_t gen_intr(int __always_unused irq, void *data)
+ {
++	struct gen_net_data *pdata = (struct gen_net_data *)data;
+ 	printk("zz %s \n", __func__);
++	cpdma_ctlr_eoi(pdata, 0, EOI_RX);
++#if 0
++	gen_intr_queue(pdata, DMA_FROM_DEVICE);
++	if (netif_running(pdata->ndev)) {
++		napi_schedule(&pdata->napi);
++		return IRQ_HANDLED;
++	}
++#endif
++	cpdma_ctlr_eoi(pdata, 1, EOI_RX);
+ 	return IRQ_HANDLED;
+ }
+ 
+@@ -377,7 +443,7 @@ static irqreturn_t gen_tx_intr(int __always_unused irq, void *data)
+ 
+ 	printk("zz %s \n", __func__);
+ 	cpdma_ctlr_eoi(pdata, 0, EOI_TX);
+-	gen_proccess_queue(pdata, 1);
++	gen_intr_queue(pdata, DMA_TO_DEVICE);
+ 	cpdma_ctlr_eoi(pdata, 1, EOI_TX);
+ 
+ 	/*disable_irq_nosync(irq);
+@@ -388,13 +454,19 @@ static irqreturn_t gen_tx_intr(int __always_unused irq, void *data)
+ 	return IRQ_NONE;
+ }
+ 
++static int cpsw_poll(struct napi_struct *napi, int budget)
++{
++	struct gen_net_data *pdata= napi_tx_to_priv(napi);
++	gen_intr_queue(pdata, DMA_FROM_DEVICE);
++}
++
+ static int cpsw_tx_poll(struct napi_struct *napi, int budget)
+ {
+ 	struct gen_net_data *pdata= napi_tx_to_priv(napi);
+ 	int			num_tx;
+ 
+ 	num_tx = 1;
+-	gen_proccess_queue(pdata, DMA_TO_DEVICE);
++	gen_intr_queue(pdata, DMA_TO_DEVICE);
+ 	napi_complete(napi);
+ 	enable_irq(pdata->tx_irq);
+ 	return num_tx;
+@@ -438,8 +510,8 @@ static int generic_net_probe(struct platform_device *pdev)
+ 	}
+ 
+ 	ndev->netdev_ops = &cpsw_netdev_ops;
+-	//netif_napi_add(ndev, &priv->napi, cpsw_poll, CPSW_POLL_WEIGHT);
+-	//netif_napi_add(ndev, &priv->napi_tx, cpsw_tx_poll, CPSW_POLL_WEIGHT);
++	netif_napi_add(ndev, &g_data->napi, cpsw_poll, CPSW_POLL_WEIGHT);
++	netif_napi_add(ndev, &g_data->napi_tx, cpsw_tx_poll, CPSW_POLL_WEIGHT);
+ 	/* register the network device */
+ 	SET_NETDEV_DEV(ndev, &pdev->dev);
+ 	ndev->ethtool_ops = &generic_netdev_tool;
+@@ -466,6 +538,8 @@ static int generic_net_probe(struct platform_device *pdev)
+ 	//netif_napi_add(ndev, &g_data->napi, cpsw_poll, CPSW_POLL_WEIGHT);
+ 	netif_napi_add(ndev, &g_data->napi_tx, cpsw_tx_poll,
+ 		       CPSW_POLL_WEIGHT);
++	netif_napi_add(ndev, &g_data->napi_tx, cpsw_tx_poll,
++		       CPSW_POLL_WEIGHT);
+ 
+ #if 0
+ 	//test code
+diff --git a/drivers/net/ethernet/generic_net.h b/drivers/net/ethernet/generic_net.h
+index 110b0d8..ef1ab75 100644
+--- a/drivers/net/ethernet/generic_net.h
++++ b/drivers/net/ethernet/generic_net.h
+@@ -128,6 +128,7 @@ struct gen_net_data
+ 	struct phy_device *phydev;
+ 	u32 tx_irq;
+ 	u32 rx_irq;
++	u8 macaddr[6];
+ };
+ 
+ extern struct generic_mdio_data *gen_mdio_data;
+@@ -144,14 +145,21 @@ void gen_tran_test(struct gen_net_data *pdata);
+ void gen_cppi_irq_ctrl(struct gen_net_data *pdata, u32 enable);
+ void cpdma_ctlr_eoi(struct gen_net_data *pdata, u32 enable, u32 type);
+ void proccess_dma_chan(struct gen_net_data *pdata);
+-int gen_proccess_queue(struct gen_net_data *pdata, int directory);
+-int gen_submit_data(struct gen_net_data *pdata, void *buf, int size, int dirc);
++int gen_intr_queue(struct gen_net_data *pdata, int directory);
++int gen_submit_data(struct gen_net_data *pdata, void *token, void *buf, int size, int dirc);
++void gen_cpsw_cppi_register_rx(struct gen_net_data *pdata, void (*handle_rx)(struct gen_net_data *pdata, void *token, int size));
++void dump_cpsw_control(void *base);
++void dump_cpsw_SL12(void *base);
++void dump_cpsw_ale(void *base);
+ 
+ enum EOI_TYPE {
+ 	EOI_TX = 1,
+ 	EOI_RX
+ };
+ 
++#define MAX_RX_CNT (8)
++#define MAX_TX_CNT (8)
++#define GEN_RX_MAX 		(0x5ee)
+ #define CPSW_BASE 	  0x4A100000
+ #define CPSW_SIZE 	  0x3000
+ 
+@@ -161,7 +169,8 @@ enum EOI_TYPE {
+ #define CPSW_STATS    0x000900
+ #define CPSW_STATERAM 0x000A00
+ #define CPSW_CPTS     0x000C00
+-#define CPSW_ALE      0x000D00
++#define CPSW_ALE      0x000000
++//#define CPSW_ALE      0x000D00
+ #define CPSW_SL1      0x000D80
+ #define CPSW_SL2      0x000DC0
+ #define MDIO          0x001000
+diff --git a/drivers/net/ethernet/generic_transfer.c b/drivers/net/ethernet/generic_transfer.c
+index ffcbafa..e8ad5af 100644
+--- a/drivers/net/ethernet/generic_transfer.c
++++ b/drivers/net/ethernet/generic_transfer.c
+@@ -68,8 +68,6 @@
+ #define CPDMA_DESC_OWNER	BIT(29)
+ #define CPDMA_DESC_EOQ		BIT(28)
+ 
+-#define MAX_RX_CNT (8)
+-#define MAX_TX_CNT (8)
+ 
+ #define MAX_TRAN_POOL_NUMBER (16)
+ #define MAX_TRAN_RAM_SIZE (0x2000)
+@@ -84,6 +82,7 @@ struct gen_cpsw_cppi_des {
+ 	u32			hw_buffer;
+ 	u32			hw_len;
+ 	u32			hw_mode;
++	u32			token;
+ 	/* software fields */
+ 	u32			sw_buffer;
+ 	u32			sw_len;
+@@ -95,7 +94,7 @@ struct gen_cpsw_cppi_des {
+  */
+ struct hw_chan_list {
+ 	struct gen_cpsw_cppi_des *dma_chan_desc;
+-	struct list_head list;	
++	struct list_head list;
+ };
+ 
+ struct gen_tran_pool {
+@@ -111,16 +110,17 @@ struct gen_tran_pool {
+ 
+ 	u32 num_desc;
+ 	spinlock_t *lock;
+-	struct list_head rx_list;	
+-	//struct list_head tx_list;
+-	struct list_head tx_list;	
++	struct list_head rx_list;
++	struct list_head tx_list;
++	struct list_head rx_handle_list;
++	struct list_head tx_handle_list;
++	void (*handle_rx)(struct gen_net_data *pdata, void *tokern, int size);
+ };
+ 
+ 
+ struct gen_tran_pool * g_tran_pool;
+ void gen_cpsw_fill_desc(struct gen_tran_pool *pool, struct gen_cpsw_cppi_des *chan_desc, void *buffer, int len, dma_addr_t dma_buf);
+ struct gen_cpsw_cppi_des *gen_cpsw_pool_alloc(struct gen_tran_pool *pool, int size);
+-static void gen_dbg_process(struct gen_net_data *pdata, struct gen_cpsw_cppi_des *desc);
+ static void gen_dbg_clear_pend(struct gen_net_data *pdata);
+ 
+ static void gen_cpsw_write(u32 value, u32 reg)
+@@ -179,11 +179,23 @@ static void dump_dbg_list(struct list_head *list)
+ 
+ static void dump_dbg_dma(void)
+ {
+-	 printk("pend:%08x mask:%08x status:%08x\n"
++	 printk("tx pend:%08x mask:%08x status:%08x\n"
+ 		   ,gen_cpsw_read(CPDMA_TX_INTSTAT_RAW)
+ 		   ,gen_cpsw_read(CPDMA_TX_INTSTAT_MASK)
+ 		   ,gen_cpsw_read(CPDMA_STATUS)
+ 		   );
++	 printk("rx pend:%08x mask:%08x status:%08x\n"
++		   ,gen_cpsw_read(CPDMA_RX_INTSTAT_RAW)
++		   ,gen_cpsw_read(CPDMA_RX_INTSTAT_MASK)
++		   ,gen_cpsw_read(CPDMA_STATUS)
++		   );
++	printk(" CPDMA_RXHDP_VER2:%08x \n"  ,(u32)gen_cpsw_read(CPDMA_RXHDP_VER2));
++	printk(" CPDMA_TXHDP_VER2:%08x \n"  ,(u32)gen_cpsw_read(CPDMA_TXHDP_VER2));
++}
++
++void gen_cpsw_cppi_register_rx(struct gen_net_data *pdata, void (*handle_rx)(struct gen_net_data *pdata, void *token, int size))
++{
++	g_tran_pool->handle_rx = handle_rx;
+ }
+ 
+ static struct gen_cpsw_cppi_des* gen_cpdma_alloc_desc(struct gen_tran_pool *pool)
+@@ -206,13 +218,21 @@ static struct gen_cpsw_cppi_des* gen_cpdma_alloc_desc(struct gen_tran_pool *pool
+ 
+ static void gen_cpdma_free_desc(struct gen_net_data *pdata, struct gen_cpsw_cppi_des* desc)
+ {
+-	u32 index;
++	u32 index, size;
++	unsigned long flags;
++	void *token;
++
++	spin_lock_irqsave(g_tran_pool->lock, flags);
+ 	index = ((u32)desc-(u32)g_tran_pool->cppi_ram_addr)/sizeof(struct gen_cpsw_cppi_des);
+ 	DBG("free desc:%08x phy:%08x index:%d\n", (u32)desc, (u32)desc_to_phy(desc), index);
+ 	if (index > MAX_TRAN_POOL_NUMBER) {
+ 		return ;
+ 	}
++	token = __raw_readl(&desc->token);
++	size = __raw_readl(&desc->hw_len);
+ 	bitmap_clear(g_tran_pool->bitmap,0,index);
++	spin_unlock_irqrestore(g_tran_pool->lock, flags);
++	g_tran_pool->handle_rx(pdata, token, size);
+ }
+ 
+ static void setbit_and_wait_for_clear32(void * offset)
+@@ -245,10 +265,9 @@ void gen_dma_control_init(void * __iomem dma_regs)
+ 	}
+ 
+ 	__raw_writel(0xf, dma_regs + CPDMA_TX_INTSTAT_SET);
+-	//__raw_writel(0x1, dma_regs + CPDMA_NTSTAT_SET);
++	__raw_writel(0xf, dma_regs + CPDMA_RX_INTSTAT_SET);
+     __raw_writel(1, dma_regs + CPDMA_TXCONTROL);
+ 	__raw_writel(1, dma_regs + CPDMA_RXCONTROL);
+-
+ }
+ 
+ void cpdma_ctlr_eoi(struct gen_net_data *pdata, u32 enable, u32 type)
+@@ -306,43 +325,52 @@ int gen_submit_dma(struct gen_net_data *pdata,  struct gen_cpsw_cppi_des *desc)
+ #define DMA_CTRL_PORT (1<<20)
+ #define DMA_CTRL_EN_PORT1 (1<<16)
+ #define DMA_CTRL_EN_PORT2 (2<<16)
+-int gen_cppi_desc_fill(struct gen_cpsw_cppi_des *des, void *buf, dma_addr_t dma_addr, int len)
++int gen_cppi_desc_fill(struct gen_cpsw_cppi_des *des, void *token, void *buf, dma_addr_t dma_addr, int len)
+ {
+ 	__raw_writel(0, &des->hw_next);
+ 	__raw_writel(0x400, &des->hw_len);
+ 	__raw_writel((u32)buf, &des->sw_buffer);
+ 	__raw_writel(len, &des->sw_len);
+ 	__raw_writel(dma_addr, &des->hw_buffer);
+-	__raw_writel(DMA_CTRL_SOF|DMA_CTRL_EOP|DMA_CTRL_OWN|DMA_CTRL_PORT|DMA_CTRL_EN_PORT2| len, &des->hw_mode);
++	__raw_writel(token, &des->token);
++#if 0
++	__raw_writel(DMA_CTRL_SOF|DMA_CTRL_EOP|DMA_CTRL_OWN| len, &des->hw_mode);
++#else
++	__raw_writel(DMA_CTRL_OWN| len, &des->hw_mode);
++#endif
+ 	return 0;
+-}
+ 
++}
+ 
+-int gen_submit_data(struct gen_net_data *pdata, void *buf, int size, int dirc)
++static	struct gen_cpsw_cppi_des *dbg_desc;
++int gen_submit_data(struct gen_net_data *pdata, void *token, void *buf, int size, int dirc)
+ {
+-	struct gen_cpsw_cppi_des *desc;
+-	struct hw_chan_list *chan_list;
++	struct gen_cpsw_cppi_des *desc, *prev_desc;
++	struct hw_chan_list *chan_list, *chan_prev;
+ 	struct list_head *list;
+ 	u8 dma_type;
++	u32 hw_mode;
+ 	void * __iomem reg;
+-
++	u32 reg_val;
+ 	dma_addr_t dma_addr;
+ 
++
+ 	switch (dirc) {
+-		case 0: 
++		case DMA_TO_DEVICE:
+ 			dma_type = DMA_TO_DEVICE;
+ 			list = &g_tran_pool->tx_list;
+-			reg = CPDMA_TXHDP_VER2;
++			reg = (void * __iomem) CPDMA_TXHDP_VER2;
+ 			/*tx type*/
+ 			break;
+-		case 1: 
++		case DMA_FROM_DEVICE:
+ 			dma_type = DMA_FROM_DEVICE;
+ 			list = &g_tran_pool->rx_list;
+-			reg = CPDMA_RXHDP_VER2;
++			reg = (void * __iomem) CPDMA_RXHDP_VER2;
+ 			/*rx type*/
+ 			break;
+ 		default:
+-			break;
++			dev_err(&pdata->pdev->dev, "DMA directory wrong\n");
++			return -1;
+ 	}
+ 
+ 	dma_addr = dma_map_single(&pdata->pdev->dev, buf, size, dma_type);
+@@ -356,55 +384,128 @@ int gen_submit_data(struct gen_net_data *pdata, void *buf, int size, int dirc)
+ 		printk("err: alloc des failed\n");
+ 		return -1;
+ 	}
+-	gen_cppi_desc_fill(desc, buf, dma_addr, size);
++	gen_cppi_desc_fill(desc, token, buf, dma_addr, size);
+ 
+-	chan_list = (struct gen_cpsw_cppi_des *)kmalloc(sizeof(struct hw_chan_list), GFP_KERNEL);
++	chan_list = (struct hw_chan_list*)kmalloc(sizeof(struct hw_chan_list), GFP_KERNEL);
+ 	if (!chan_list) {
+ 		printk("err: alloc list failed\n");
+ 		goto out;
+ 	}
+-	chan_list->dma_chan_desc = desc;
+ 
++	chan_list->dma_chan_desc = desc;
+ 	INIT_LIST_HEAD(&chan_list->list);
++	if (list_empty(list)) {
++		hw_mode = __raw_readl(&desc->hw_mode);
++		__raw_writel(hw_mode|DMA_CTRL_SOF|DMA_CTRL_EOP, &desc->hw_mode);
++		gen_cpsw_write((u32)desc_to_phy(desc), (u32)reg);
++		list_add_tail(&chan_list->list, list);
++		return 0;
++	}
++
++	chan_prev = container_of(list->prev, struct hw_chan_list, list);
++	prev_desc = chan_prev->dma_chan_desc;
++	hw_mode = __raw_readl(&prev_desc->hw_mode);
++	hw_mode &=~DMA_CTRL_EOP;
++	__raw_writel(hw_mode|DMA_CTRL_EOP, &prev_desc->hw_mode);
++	__raw_writel(DMA_CTRL_OWN|DMA_CTRL_EOQ|size, &desc->hw_mode);
++	__raw_writel(desc_to_phy(desc), &prev_desc->hw_next);
+ 	list_add_tail(&chan_list->list, list);
++	dump_dbg_desc(prev_desc);
++	dump_dbg_desc(desc);
+ 
+-	gen_cpsw_write((u32)desc_to_phy(desc), reg);
+ 	return 0;
+ out:
+ 	gen_cpdma_free_desc(pdata, desc);
+ 	return -1;
+ }
+ 
+-int gen_proccess_queue(struct gen_net_data *pdata, int directory)
++int gen_process_queue(struct gen_net_data *pdata, int directory)
+ {
+-	struct gen_cpsw_cppi_des  *desc, *n;
+ 	struct hw_chan_list *chan, *chan_n;
++	struct gen_cpsw_cppi_des  *desc;
++	struct list_head *chan_list;
++
++	chan_list = &g_tran_pool->tx_list;
++	if (!directory) {
++		chan_list = &g_tran_pool->tx_handle_list;
++	} else if (directory == 1) {
++		chan_list = &g_tran_pool->rx_handle_list;
++	} else {
++		dev_err(&pdata->pdev->dev, "directory wrong\n");
++		return -1;
++	}
++
++	list_for_each_entry_safe(chan, chan_n, chan_list, list) {
++		desc = chan->dma_chan_desc;
++		gen_cpdma_free_desc(pdata, desc);
++		list_del(&chan->list);
++	}
++	return 0;
++}
++
++int gen_intr_queue(struct gen_net_data *pdata, int directory)
++{
++	struct gen_cpsw_cppi_des  *desc, *desc_next;
++	struct hw_chan_list *chan, *chan_n;
++	struct list_head *chan_list;
+ 	u32 hwmode;
+-	void *buf;
+-	u32 len, dma_dirc;
++	void *buf, *hwdesc_next;
++	u32 len, dma_dirc, regs;
++
++	dma_dirc = (directory == DMA_TO_DEVICE) ? DMA_TO_DEVICE : DMA_FROM_DEVICE;
+ 
+-	if (directory == DMA_TO_DEVICE) {
++	if (dma_dirc == DMA_TO_DEVICE) {
+ 		if (list_empty(&g_tran_pool->tx_list))
+ 			return 0;
++		chan_list = &g_tran_pool->tx_list;
++		regs = CPDMA_TXCP_VER2;
++	} else if (dma_dirc == DMA_FROM_DEVICE) {
++		if (list_empty(&g_tran_pool->rx_list))
++			return 0;
++		chan_list = &g_tran_pool->rx_list;
++		regs = CPDMA_RXCP_VER2;
++	} else {
++		dev_err(&pdata->pdev->dev, "DMA directory wrong\n");
++		return 0;
+ 	}
+ 
+-	dma_dirc = (directory == DMA_TO_DEVICE) ? DMA_TO_DEVICE : DMA_FROM_DEVICE;
+-	list_for_each_entry_safe(chan, chan_n, &g_tran_pool->tx_list, list) {
++	list_for_each_entry_safe(chan, chan_n, chan_list, list) {
+ 		desc = chan->dma_chan_desc;
+ 		hwmode = __raw_readl(&desc->hw_mode);
+-		if (hwmode | DMA_CTRL_EOQ) {
+-			DBG("zz %s proccess desc:%08x\n", __func__, desc);
+-			gen_cpsw_write((u32)desc_to_phy(desc), CPDMA_TXCP_VER2);
++		//if (hwmode | DMA_CTRL_EOQ) {
++		if (hwmode & DMA_CTRL_OWN) {
++			return 0;
++		} else {
++			//DBG("zz %s proccess desc:%08x\n", __func__, (u32)desc);
++			dump_dbg_desc(desc);
++			gen_cpsw_write((u32)desc_to_phy(desc), (u32)regs);
+ 			buf = (void*)__raw_readl(&desc->sw_buffer);
+ 			len = __raw_readl(&desc->sw_len);
+ 			dma_unmap_single(&pdata->pdev->dev, desc->hw_buffer, len, dma_dirc);
+-			gen_cpdma_free_desc(pdata, desc);
++			//gen_cpdma_free_desc(pdata, desc);
++			list_add_tail(&chan->list,&g_tran_pool->rx_handle_list);
+ 			list_del(&chan->list);
+ 		}
+ 	}
++
+ 	return 0;
+ }
+ 
++void gen_cpdma_chan_rvinit(struct gen_net_data *pdata)
++{
++#if 0
++	void *buf;
++	u32 i;
++	u32 len = 0x5ee;
++
++	//for (i = 0; i < MAX_RX_CNT; i++) {
++	for (i = 0; i < 2; i++) {
++		buf = kmalloc(len, GFP_KERNEL);
++		gen_submit_data(pdata, buf, len, DMA_FROM_DEVICE);
++	}
++#endif
++}
++
+ #define CPPI_RAM_ADDR (0x4a102000)
+ void gen_cpsw_crtl_pool_init(struct gen_net_data *pdata)
+ {
+@@ -423,6 +524,8 @@ void gen_cpsw_crtl_pool_init(struct gen_net_data *pdata)
+ 	spin_lock_init(pool->lock);
+ 	INIT_LIST_HEAD(&pool->rx_list);
+ 	INIT_LIST_HEAD(&pool->tx_list);
++	INIT_LIST_HEAD(&pool->rx_handle_list);
++	INIT_LIST_HEAD(&pool->tx_handle_list);
+ 
+ 	g_tran_pool = pool;
+ }
+@@ -431,41 +534,30 @@ int gen_cppi_init(struct gen_net_data *pdata, u32 phy_addr)
+ {
+ 	gen_cpsw_crtl_pool_init(pdata);
+ 	gen_dma_control_init(g_tran_pool->dma_regs);
++	gen_cpdma_chan_rvinit(pdata);
+ 	__raw_writel(0x01, &pdata->wr_regs->tx_en);
+ 	__raw_writel(0x01, &pdata->wr_regs->rx_en);
+ 	return 0;
+ }
+ 
+-static void gen_dbg_process(struct gen_net_data *pdata, struct gen_cpsw_cppi_des *desc)
+-{
+-	u32 status, len;
+-	void *buf;
+-
+-	status = __raw_readl(&desc->hw_mode);
+-	if (status & CPDMA_DESC_OWNER) {
+-		printk("zz %s busy\n", __func__);
+-	}
+-
+-	gen_cpsw_write((u32)desc_to_phy(desc), CPDMA_TXCP_VER2);
+-	buf = (void*)__raw_readl(&desc->sw_buffer);
+-	len = __raw_readl(&desc->sw_len);
+-	dma_unmap_single(&pdata->pdev->dev, desc->hw_buffer, len, DMA_TO_DEVICE);
+-
+-	while(1);
+-}
+-
+ void gen_tran_test(struct gen_net_data *pdata)
+ {
+-	void *buf;
+-	u32 len = 1024;
+-	struct gen_cpsw_cppi_des *des;
+-	dma_addr_t dma_addr;
+-
+-	buf = kmalloc(1024, GFP_KERNEL);
+-
+-	gen_submit_data(pdata, buf, len, 0);
++#if 0
++	void *buf1, *buf2;
++	u32 len1 = 1024;
++	u32 len2 = 0x5ee;
++	//struct gen_cpsw_cppi_des *des;
++	//dma_addr_t dma_addr;
++
++	buf1 = kmalloc(len1, GFP_KERNEL);
++	buf2 = kmalloc(len2, GFP_KERNEL);
++
++	//gen_submit_data(pdata, buf1, len1, 0);
++	gen_submit_data(pdata, buf2, len2, 1);
++#endif
+ 	while(1) {
+ 		msleep(1000);
++		//dump_dbg_desc(dbg_desc);
+ 		dump_dbg_dma();
+ 	}
+ }
+-- 
+1.9.1
+

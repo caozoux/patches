@@ -1,0 +1,191 @@
+From eb5c06a515d6a5eb62125675a6664318d8d04937 Mon Sep 17 00:00:00 2001
+From: czou <cao.zou@windriver.com>
+Date: Thu, 24 Nov 2016 16:38:14 +0800
+Subject: [PATCH 25/26] gen:net: now tx and rx list  can work better
+
+Signed-off-by: czou <cao.zou@windriver.com>
+---
+ drivers/net/ethernet/generic_net.c      |  5 ++--
+ drivers/net/ethernet/generic_transfer.c | 53 ++++++++++++++++++++++-----------
+ 2 files changed, 37 insertions(+), 21 deletions(-)
+
+diff --git a/drivers/net/ethernet/generic_net.c b/drivers/net/ethernet/generic_net.c
+index 7f6e335..b49a563 100644
+--- a/drivers/net/ethernet/generic_net.c
++++ b/drivers/net/ethernet/generic_net.c
+@@ -270,7 +270,7 @@ static int cpsw_ndo_start_xmit (struct sk_buff *skb,
+ {
+ 	struct gen_net_data *pdata = netdev_priv(ndev);
+ 
+-	//gen_submit_data(pdata, skb->data, skb->len, DMA_TO_DEVICE);
++	gen_submit_data(pdata, (void*)skb, skb->data, skb->len, DMA_TO_DEVICE);
+ 	return NETDEV_TX_OK;
+ }
+ 
+@@ -304,7 +304,6 @@ static void cpsw_ndo_tx_timeout(struct net_device *ndev)
+ static void cpsw_ndo_set_rx_mode(struct net_device *ndev)
+ {
+ 	printk("zz %s \n", __func__);
+-
+ }
+ 
+ static void cpsw_ndo_poll_controller(struct net_device *ndev)
+@@ -408,7 +407,7 @@ void gen_handle_rx(struct gen_net_data *pdata, void *token,  int len)
+ 		new_skb = skb;
+ 		goto error;	
+ 	} else {
+-		skb_put(skb, len);
++		//skb_put(skb, len);
+ 		skb->protocol = eth_type_trans(skb, pdata->ndev);
+ 		ndev->stats.rx_bytes += len;
+ 		ndev->stats.rx_packets++;
+diff --git a/drivers/net/ethernet/generic_transfer.c b/drivers/net/ethernet/generic_transfer.c
+index 7c4c069..2cc8e49 100644
+--- a/drivers/net/ethernet/generic_transfer.c
++++ b/drivers/net/ethernet/generic_transfer.c
+@@ -177,6 +177,16 @@ static void dump_dbg_list(struct list_head *list)
+ 			,(u32) list->prev);
+ }
+ 
++static void dump_dbg_bitmap(unsigned long *bitmap)
++{
++	u32 i;
++	unsigned long *p = bitmap;
++	for (i = 0; i < MAX_TRAN_POOL_NUMBER; i++) {
++		printk("p[i]:%08x \n", (u32)p[i]);
++	}
++	printk(" \n");
++
++}
+ static void dump_dbg_dma(void)
+ {
+ 	 printk("tx pend:%08x mask:%08x status:%08x\n"
+@@ -207,7 +217,7 @@ static struct gen_cpsw_cppi_des* gen_cpdma_alloc_desc(struct gen_tran_pool *pool
+ 	spin_lock_irqsave(pool->lock, flags);
+ 
+ 	index = find_first_zero_bit(pool->bitmap,MAX_TRAN_POOL_NUMBER);
+-	bitmap_fill(pool->bitmap, index);
++	set_bit(index, pool->bitmap);
+ 	desc = (struct gen_cpsw_cppi_des *)(pool->cppi_ram_addr+sizeof(struct gen_cpsw_cppi_des)*index);
+ 
+ 	spin_unlock_irqrestore(pool->lock, flags);
+@@ -218,9 +228,8 @@ static struct gen_cpsw_cppi_des* gen_cpdma_alloc_desc(struct gen_tran_pool *pool
+ 
+ static void gen_cpdma_free_desc(struct gen_net_data *pdata, struct gen_cpsw_cppi_des* desc)
+ {
+-	u32 index, size;
++	u32 index;
+ 	unsigned long flags;
+-	void *token;
+ 
+ 	spin_lock_irqsave(g_tran_pool->lock, flags);
+ 	index = ((u32)desc-(u32)g_tran_pool->cppi_ram_addr)/sizeof(struct gen_cpsw_cppi_des);
+@@ -228,11 +237,8 @@ static void gen_cpdma_free_desc(struct gen_net_data *pdata, struct gen_cpsw_cppi
+ 	if (index > MAX_TRAN_POOL_NUMBER) {
+ 		return ;
+ 	}
+-	token = __raw_readl(&desc->token);
+-	size = __raw_readl(&desc->hw_len);
+-	bitmap_clear(g_tran_pool->bitmap,0,index);
++	clear_bit(index, g_tran_pool->bitmap);
+ 	spin_unlock_irqrestore(g_tran_pool->lock, flags);
+-	g_tran_pool->handle_rx(pdata, token, size);
+ }
+ 
+ static void setbit_and_wait_for_clear32(void * offset)
+@@ -332,7 +338,7 @@ int gen_cppi_desc_fill(struct gen_cpsw_cppi_des *des, void *token, void *buf, dm
+ 	__raw_writel((u32)buf, &des->sw_buffer);
+ 	__raw_writel(len, &des->sw_len);
+ 	__raw_writel(dma_addr, &des->hw_buffer);
+-	__raw_writel(token, &des->token);
++	__raw_writel((u32)token, &des->token);
+ #if 0
+ 	__raw_writel(DMA_CTRL_SOF|DMA_CTRL_EOP|DMA_CTRL_OWN| len, &des->hw_mode);
+ #else
+@@ -351,7 +357,6 @@ int gen_submit_data(struct gen_net_data *pdata, void *token, void *buf, int size
+ 	u8 dma_type;
+ 	u32 hw_mode;
+ 	void * __iomem reg;
+-	u32 reg_val;
+ 	dma_addr_t dma_addr;
+ 
+ 
+@@ -408,9 +413,8 @@ int gen_submit_data(struct gen_net_data *pdata, void *token, void *buf, int size
+ 	hw_mode &=~DMA_CTRL_EOP;
+ 	__raw_writel(hw_mode|DMA_CTRL_EOP, &prev_desc->hw_mode);
+ 	__raw_writel(DMA_CTRL_OWN|DMA_CTRL_EOQ|size, &desc->hw_mode);
+-	__raw_writel(desc_to_phy(desc), &prev_desc->hw_next);
++	__raw_writel((u32)desc_to_phy(desc), &prev_desc->hw_next);
+ 	list_add_tail(&chan_list->list, list);
+-	dump_dbg_desc(prev_desc);
+ 	dump_dbg_desc(desc);
+ 
+ 	return 0;
+@@ -424,6 +428,8 @@ int gen_process_queue(struct gen_net_data *pdata, int directory)
+ 	struct hw_chan_list *chan, *chan_n;
+ 	struct gen_cpsw_cppi_des  *desc;
+ 	struct list_head *chan_list;
++	void *token;
++	u32 size;
+ 
+ 	chan_list = &g_tran_pool->tx_list;
+ 	if (!directory) {
+@@ -437,6 +443,12 @@ int gen_process_queue(struct gen_net_data *pdata, int directory)
+ 
+ 	list_for_each_entry_safe(chan, chan_n, chan_list, list) {
+ 		desc = chan->dma_chan_desc;
++		if (directory == 1) {
++			token = (void *)__raw_readl(&desc->token);
++			size = __raw_readl(&desc->hw_len);
++			g_tran_pool->handle_rx(pdata, token, size);
++		}
++
+ 		gen_cpdma_free_desc(pdata, desc);
+ 		list_del(&chan->list);
+ 	}
+@@ -445,11 +457,11 @@ int gen_process_queue(struct gen_net_data *pdata, int directory)
+ 
+ int gen_intr_queue(struct gen_net_data *pdata, int directory)
+ {
+-	struct gen_cpsw_cppi_des  *desc, *desc_next;
++	struct gen_cpsw_cppi_des  *desc;
+ 	struct hw_chan_list *chan, *chan_n;
+ 	struct list_head *chan_list;
+ 	u32 hwmode;
+-	void *buf, *hwdesc_next;
++	void *buf;
+ 	u32 len, dma_dirc, regs;
+ 
+ 	dma_dirc = (directory == DMA_TO_DEVICE) ? DMA_TO_DEVICE : DMA_FROM_DEVICE;
+@@ -482,9 +494,13 @@ int gen_intr_queue(struct gen_net_data *pdata, int directory)
+ 			buf = (void*)__raw_readl(&desc->sw_buffer);
+ 			len = __raw_readl(&desc->sw_len);
+ 			dma_unmap_single(&pdata->pdev->dev, desc->hw_buffer, len, dma_dirc);
+-			//gen_cpdma_free_desc(pdata, desc);
+-			list_del(&chan->list);
+-			list_add_tail(&chan->list,&g_tran_pool->rx_handle_list);
++			if (directory == DMA_TO_DEVICE) {
++				gen_cpdma_free_desc(pdata, desc);
++				list_del(&chan->list);
++			} else {
++				list_del(&chan->list);
++				list_add_tail(&chan->list,&g_tran_pool->rx_handle_list);
++			}
+ 		}
+ 	}
+ 
+@@ -517,8 +533,9 @@ void gen_cpsw_crtl_pool_init(struct gen_net_data *pdata)
+ 	pool->dma_regs = pdata->base+ DMA_REGS_OFF;
+ 	pool->cppi_ram_addr= pdata->base + RAM_REGS_OFF;
+ 	pool->phy_addr = (void*)CPPI_RAM_ADDR;
+-	pool->bitmap = kzalloc(MAX_TRAN_RAM_SIZE, GFP_KERNEL);
+-	pool->num_desc = MAX_TRAN_RAM_SIZE;
++	//pool->bitmap = kzalloc(MAX_TRAN_RAM_SIZE, GFP_KERNEL);
++	pool->bitmap = kzalloc(BITS_PER_LONG*MAX_TRAN_POOL_NUMBER, GFP_KERNEL);
++	pool->num_desc = MAX_TRAN_POOL_NUMBER;
+ 	pool->pdev = pdata->pdev;
+ 	pool->ndev = pdata->ndev;
+ 	spin_lock_init(pool->lock);
+-- 
+1.9.1
+

@@ -1,7 +1,7 @@
 From 4d0c2a2db8e851fc932addacc34db9fbb7bdcfa9 Mon Sep 17 00:00:00 2001
 From: czou <cao.zou@windriver.com>
 Date: Mon, 18 Apr 2016 10:35:02 +0800
-Subject: [PATCH 13/15] gen_net: can detect the net fram
+Subject: [PATCH 13/26] gen_net: can detect the net fram
 
 Signed-off-by: czou <cao.zou@windriver.com>
 ---

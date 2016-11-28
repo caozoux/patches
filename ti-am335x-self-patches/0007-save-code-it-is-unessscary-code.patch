@@ -1,7 +1,7 @@
 From a464ca4f9cf95bbe3b62b5f52e0ef055720ae8a7 Mon Sep 17 00:00:00 2001
 From: czou <cao.zou@windriver.com>
 Date: Mon, 29 Feb 2016 15:22:44 +0800
-Subject: [PATCH 07/15] save code, it is unessscary code
+Subject: [PATCH 07/26] save code, it is unessscary code
 
 Signed-off-by: czou <cao.zou@windriver.com>
 ---

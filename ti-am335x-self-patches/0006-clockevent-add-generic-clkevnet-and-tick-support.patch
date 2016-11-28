@@ -1,7 +1,7 @@
 From bcc423297d29ebaf0502f43aa5f0e527d4fb89d5 Mon Sep 17 00:00:00 2001
 From: czou <cao.zou@windriver.com>
 Date: Mon, 29 Feb 2016 14:58:33 +0800
-Subject: [PATCH 06/15] clockevent: add generic clkevnet and tick support
+Subject: [PATCH 06/26] clockevent: add generic clkevnet and tick support
 
 For booting, kernel need a tick increase to count ther timer and
 jiffies, otherwise booting will be blocked in schecd.

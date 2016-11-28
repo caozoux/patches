@@ -1,7 +1,7 @@
 From 1eaec82fb1d5d6ed79ac5a9afaba909e5737c886 Mon Sep 17 00:00:00 2001
 From: czou <cao.zou@windriver.com>
 Date: Fri, 26 Feb 2016 09:42:38 +0800
-Subject: [PATCH 03/15] generic: add interrupt plat code
+Subject: [PATCH 03/26] generic: add interrupt plat code
 
 now the boot is stopping in timer, it need to add a system shechled
 timer driver, first it nedd a interrupt control
