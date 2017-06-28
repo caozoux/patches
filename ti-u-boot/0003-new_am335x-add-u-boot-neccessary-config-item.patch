@@ -1,0 +1,47 @@
+From e50bb5abf16a288a67bedcba5579307849017ef2 Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Thu, 8 Jun 2017 13:10:27 +0800
+Subject: [PATCH 3/8] new_am335x: add u-boot neccessary config item
+
+u-boot need some neccessary config item to build a base image as follow:
+
+Signed-off-by: zoucao <zoucaox@outlook.com>
+---
+ configs/new_am335x_defconfig |  1 -
+ include/configs/new_am335x.h | 12 +++++-------
+ 2 files changed, 5 insertions(+), 8 deletions(-)
+
+diff --git a/configs/new_am335x_defconfig b/configs/new_am335x_defconfig
+index c09d359..91554fe 100644
+--- a/configs/new_am335x_defconfig
++++ b/configs/new_am335x_defconfig
+@@ -1,3 +1,2 @@
+ CONFIG_ARM=y
+ CONFIG_TARGET_NEWBOARD_AM335X=y
+-CONFIG_SPL=y
+diff --git a/include/configs/new_am335x.h b/include/configs/new_am335x.h
+index 1a682db..7ad7cbf 100644
+--- a/include/configs/new_am335x.h
++++ b/include/configs/new_am335x.h
+@@ -1,13 +1,11 @@
+ #ifndef __CONFIG_NEWBAORD_AM335X_H
+ #define __CONFIG_NEWBAORD_AM335X_H
+ 
+-#ifndef CONFIG_SPL_BUILD
+-#ifndef CONFIG_FIT
+-# define CONFIG_FIT
+-#endif
+-# define CONFIG_TIMESTAMP
+-# define CONFIG_LZO
+-#endif
++#define CONFIG_FIT
++#define CONFIG_NR_DRAM_BANKS		1		/*  1 bank of DRAM */
++#define CONFIG_SYS_MAX_FLASH_SECT	128
++#define CONFIG_SYS_SDRAM_BASE		0x80000000
++#define CONFIG_SYS_MALLOC_LEN		(5120 << 10)
+ 
+ /* Always 128 KiB env size */
+ #define CONFIG_ENV_SIZE			(128 << 10)
+-- 
+1.9.1
+

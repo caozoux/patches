@@ -1,0 +1,160 @@
+From fb959519c9c2d8d75f05615e8b371fe5142d4503 Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Tue, 20 Jun 2017 11:03:56 +0800
+Subject: [PATCH 7/8] add necessary code and configuretion item
+
+Signed-off-by: zoucao <zoucaox@outlook.com>
+---
+ arch/arm/cpu/armv7/Makefile             |  1 +
+ arch/arm/cpu/armv7/new-am335x/Makefile  |  1 +
+ arch/arm/cpu/armv7/new-am335x/timer.c   | 89 +++++++++++++++++++++++++++++++++
+ board/newboard_am335x/newboard_am335x.c |  5 --
+ include/configs/new_am335x.h            |  5 ++
+ 5 files changed, 96 insertions(+), 5 deletions(-)
+ create mode 100644 arch/arm/cpu/armv7/new-am335x/Makefile
+ create mode 100644 arch/arm/cpu/armv7/new-am335x/timer.c
+
+diff --git a/arch/arm/cpu/armv7/Makefile b/arch/arm/cpu/armv7/Makefile
+index 5a76100..b13b0ae 100644
+--- a/arch/arm/cpu/armv7/Makefile
++++ b/arch/arm/cpu/armv7/Makefile
+@@ -54,3 +54,4 @@ obj-$(if $(filter stv0991,$(SOC)),y) += stv0991/
+ obj-$(CONFIG_ARCH_SUNXI) += sunxi/
+ obj-$(CONFIG_U8500) += u8500/
+ obj-$(CONFIG_VF610) += vf610/
++obj-$(CONFIG_TARGET_NEWBOARD_AM335X) += new-am335x/
+diff --git a/arch/arm/cpu/armv7/new-am335x/Makefile b/arch/arm/cpu/armv7/new-am335x/Makefile
+new file mode 100644
+index 0000000..8c6818a
+--- /dev/null
++++ b/arch/arm/cpu/armv7/new-am335x/Makefile
+@@ -0,0 +1 @@
++obj-y	+= timer.o
+diff --git a/arch/arm/cpu/armv7/new-am335x/timer.c b/arch/arm/cpu/armv7/new-am335x/timer.c
+new file mode 100644
+index 0000000..5237d98
+--- /dev/null
++++ b/arch/arm/cpu/armv7/new-am335x/timer.c
+@@ -0,0 +1,89 @@
++#include <common.h>
++#include <asm/io.h>
++//#include <asm/arch/cpu.h>
++//#include <asm/arch/clock.h>
++
++DECLARE_GLOBAL_DATA_PTR;
++
++/*
++ * Nothing really to do with interrupts, just starts up a counter.
++ */
++
++#define TIMER_CLOCK		(V_SCLK / (2 << CONFIG_SYS_PTV))
++#define TIMER_OVERFLOW_VAL	0xffffffff
++#define TIMER_LOAD_VAL		0
++
++int timer_init(void)
++{
++#if 0
++	/* start the counter ticking up, reload value on overflow */
++	writel(TIMER_LOAD_VAL, &timer_base->tldr);
++	/* enable timer */
++	writel((CONFIG_SYS_PTV << 2) | TCLR_PRE | TCLR_AR | TCLR_ST,
++		&timer_base->tclr);
++#endif
++
++	return 0;
++}
++
++/*
++ * timer without interrupts
++ */
++ulong get_timer(ulong base)
++{
++	return get_timer_masked() - base;
++}
++
++/* delay x useconds */
++void __udelay(unsigned long usec)
++{
++#if 0
++	long tmo = usec * (TIMER_CLOCK / 1000) / 1000;
++	unsigned long now, last = readl(&timer_base->tcrr);
++
++	while (tmo > 0) {
++		now = readl(&timer_base->tcrr);
++		if (last > now) /* count up timer overflow */
++			tmo -= TIMER_OVERFLOW_VAL - last + now + 1;
++		else
++			tmo -= now - last;
++		last = now;
++	}
++#endif
++}
++
++ulong get_timer_masked(void)
++{
++#if 0
++	/* current tick value */
++	ulong now = readl(&timer_base->tcrr) / (TIMER_CLOCK / CONFIG_SYS_HZ);
++
++	if (now >= gd->arch.lastinc) {	/* normal mode (non roll) */
++		/* move stamp fordward with absoulte diff ticks */
++		gd->arch.tbl += (now - gd->arch.lastinc);
++	} else {	/* we have rollover of incrementer */
++		gd->arch.tbl += ((TIMER_LOAD_VAL / (TIMER_CLOCK /
++				CONFIG_SYS_HZ)) - gd->arch.lastinc) + now;
++	}
++	gd->arch.lastinc = now;
++#endif
++	return gd->arch.tbl;
++}
++
++/*
++ * This function is derived from PowerPC code (read timebase as long long).
++ * On ARM it just returns the timer value.
++ */
++unsigned long long get_ticks(void)
++{
++	return get_timer(0);
++}
++
++/*
++ * This function is derived from PowerPC code (timebase clock frequency).
++ * On ARM it returns the number of timer ticks per second.
++ */
++ulong get_tbclk(void)
++{
++	return CONFIG_SYS_HZ;
++}
+diff --git a/board/newboard_am335x/newboard_am335x.c b/board/newboard_am335x/newboard_am335x.c
+index 69e912f..0ca44f4 100644
+--- a/board/newboard_am335x/newboard_am335x.c
++++ b/board/newboard_am335x/newboard_am335x.c
+@@ -37,11 +37,6 @@ int dram_init(void)
+ 	return 0;
+ }
+ 
+-ulong get_tbclk(void)
+-{
+-	return 0;
+-}
+-
+ unsigned long flash_init (void)
+ {
+ 	return 0;
+diff --git a/include/configs/new_am335x.h b/include/configs/new_am335x.h
+index db79253..d53ebbe 100644
+--- a/include/configs/new_am335x.h
++++ b/include/configs/new_am335x.h
+@@ -29,4 +29,9 @@
+ #define CONFIG_SYS_LDSCRIPT "board/newboard_am335x/u-boot.lds"
+ /*#define CONFIG_SPL_LDSCRIPT "board/newboard_am335x/u-boot.lds"*/
+ #define CONFIG_SYS_TEXT_BASE		0x80100000
++
++#define CONFIG_SYS_TIMERBASE		0x48040000	/* Use Timer2 */
++/*#define CONFIG_SYS_TIMER_RATE		(1000000 / 256)
++#define CONFIG_SYS_TIMER_COUNTER	(CONFIG_SYS_TIMERBASE + 0x4)
++#define CONFIG_SYS_TIMER_COUNTS_DOWN*/
+ #endif
+-- 
+1.9.1
+
