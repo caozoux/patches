@@ -1,0 +1,77 @@
+From 71070d62f0eae1984333d67fb3f0e10f962da1f8 Mon Sep 17 00:00:00 2001
+From: zou cao <cao.zou@windriver.com>
+Date: Sun, 21 May 2017 19:47:10 +0800
+Subject: [PATCH] mm: memblock: add memblock dump function
+
+Signed-off-by: zou cao <cao.zou@windriver.com>
+---
+ include/linux/mm_patch.h |  4 ++++
+ mm/mm_patch.c            | 45 +++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 49 insertions(+)
+ create mode 100644 include/linux/mm_patch.h
+ create mode 100644 mm/mm_patch.c
+
+diff --git a/include/linux/mm_patch.h b/include/linux/mm_patch.h
+new file mode 100644
+index 0000000..2640d48
+--- /dev/null
++++ b/include/linux/mm_patch.h
+@@ -0,0 +1,4 @@
++#ifndef __MM_PATCH__
++#define __MM_PATCH__
++void dump_kmemblock(struct memblock *memblock);
++#endif /* ifndef __ valuMM_PATCH__ */
+diff --git a/mm/mm_patch.c b/mm/mm_patch.c
+new file mode 100644
+index 0000000..e41f199
+--- /dev/null
++++ b/mm/mm_patch.c
+@@ -0,0 +1,45 @@
++#include <linux/kernel.h>
++#include <linux/slab.h>
++#include <linux/init.h>
++#include <linux/bitops.h>
++#include <linux/poison.h>
++#include <linux/pfn.h>
++#include <linux/debugfs.h>
++#include <linux/seq_file.h>
++#include <linux/memblock.h>
++
++#include <asm-generic/sections.h>
++#include <linux/io.h>
++
++
++/*dump系统memblock_init时，整个系统的内存状态,
++ * memblock.memory 表示当前系统内存分布
++ * memblock.regions 表示当前系统保留的内存， 比如kernel的代码数据段，pdg/pte的内存段， acm
++ */ 
++void dump_kmemblock(struct memblock *memblock)
++{
++	int i;
++	struct memblock_region *regions;
++
++	printk("zz %s %d \n", __func__, __LINE__);
++	printk("struct memblock:\n");
++	printk(" bottom_up:%08x current_limit:%08x \n", (int)memblock->bottom_up, (int)memblock->current_limit);
++	
++	printk("struct memblock.memory:\n");
++	printk(" cnt:%08x max:%08x total_size:%08x \n", (int)memblock->memory.cnt, (int)memblock->memory.max, (int)memblock->memory.total_size);
++	printk("struct memblock.memory.regions:\n");
++	for (i = 0; i < memblock->memory.cnt; ++i) {
++		regions =  &memblock->memory.regions[i];
++		printk(" base:%08x size:%08x flags:%08x \n", (int)regions->base, 
++			(int)regions->size, (int)regions->flags);
++	}
++
++	printk("struct memblock.reserved:\n");
++	printk(" cnt:%08x max:%08x total_size:%08x \n", (int)memblock->reserved.cnt, (int)memblock->reserved.max, (int)memblock->reserved.total_size);
++	printk("struct memblock.memory.regions:\n");
++	for (i = 0; i < memblock->reserved.cnt; ++i) {
++		regions =  &memblock->reserved.regions[i];
++		printk(" base:%08x size:%08x flags:%08x \n", (int)regions->base, 
++			(int)regions->size, (int)regions->flags);
++	}
++}
+-- 
+1.9.1
+
