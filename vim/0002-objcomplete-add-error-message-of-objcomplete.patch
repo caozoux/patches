@@ -1,0 +1,34 @@
+From 943c3bf23526f657d24e0a96cb879ab7da27270f Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Wed, 13 Sep 2017 21:11:27 +0800
+Subject: [PATCH] objcomplete: add error message of objcomplete
+
+---
+ src/edit.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/src/edit.c b/src/edit.c
+index 8fed7cd..e6ee980 100644
+--- a/src/edit.c
++++ b/src/edit.c
+@@ -5430,8 +5430,15 @@ ins_complete(int c, int enable_pum)
+ 					  ? curbuf->b_p_cfu : curbuf->b_p_ofu;*/
+ 	    if (*funcname == NUL)
+ 	    {
+-		EMSG2(_(e_notset), ctrl_x_mode == CTRL_X_FUNCTION
+-					     ? "completefunc" : "omnifunc");
++		if (ctrl_x_mode == CTRL_X_FUNCTION) {
++		    EMSG2(_(e_notset), "completefunc");
++		} else if (ctrl_x_mode == CTRL_X_OBJ) {
++		    EMSG2(_(e_notset), "objfunc");
++		} else {
++		    EMSG2(_(e_notset), "omnifunc");
++		}
++		//EMSG2(_(e_notset), ctrl_x_mode == CTRL_X_FUNCTION
++		//			     ? "completefunc" : "omnifunc");
+ 		/* restore did_ai, so that adding comment leader works */
+ 		did_ai = save_did_ai;
+ 		return FAIL;
+-- 
+1.9.1
+
