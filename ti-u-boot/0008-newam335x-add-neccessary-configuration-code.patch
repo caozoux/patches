@@ -1,0 +1,23 @@
+From 04fc96ddf57a64dcc1be54f17159eadd7ed74092 Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Tue, 20 Jun 2017 13:15:07 +0800
+Subject: [PATCH 8/8] newam335x: add neccessary configuration code
+
+Signed-off-by: zoucao <zoucaox@outlook.com>
+---
+ include/configs/new_am335x.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/include/configs/new_am335x.h b/include/configs/new_am335x.h
+index d53ebbe..2465c90 100644
+--- a/include/configs/new_am335x.h
++++ b/include/configs/new_am335x.h
+@@ -34,4 +34,5 @@
+ /*#define CONFIG_SYS_TIMER_RATE		(1000000 / 256)
+ #define CONFIG_SYS_TIMER_COUNTER	(CONFIG_SYS_TIMERBASE + 0x4)
+ #define CONFIG_SYS_TIMER_COUNTS_DOWN*/
++#define CONFIG_SYS_GENERIC_BOARD
+ #endif
+-- 
+1.9.1
+

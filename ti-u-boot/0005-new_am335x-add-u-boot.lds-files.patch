@@ -1,0 +1,25 @@
+From 63ded4f14ec0e1ccccb3944476e579ad6f3a9793 Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Mon, 12 Jun 2017 17:15:28 +0800
+Subject: [PATCH 5/8] new_am335x: add u-boot.lds files
+
+Signed-off-by: zoucao <zoucaox@outlook.com>
+---
+ include/configs/new_am335x.h | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/include/configs/new_am335x.h b/include/configs/new_am335x.h
+index 4e46ded..db79253 100644
+--- a/include/configs/new_am335x.h
++++ b/include/configs/new_am335x.h
+@@ -26,5 +26,7 @@
+ #define CONFIG_MMC
+ #define CONFIG_GENERIC_MMC
+ #define CONFIG_SKIP_LOWLEVEL_INIT
++#define CONFIG_SYS_LDSCRIPT "board/newboard_am335x/u-boot.lds"
++/*#define CONFIG_SPL_LDSCRIPT "board/newboard_am335x/u-boot.lds"*/
+ #define CONFIG_SYS_TEXT_BASE		0x80100000
+ #endif
+-- 
+1.9.1
+

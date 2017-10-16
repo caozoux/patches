@@ -1,0 +1,29 @@
+From cc8e82fcc943fae8b62af1ed50213da69a4c2f39 Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Thu, 8 Jun 2017 12:56:34 +0800
+Subject: [PATCH 2/8] lost boart dirtory
+
+Signed-off-by: zoucao <zoucaox@outlook.com>
+---
+ board/newboard_am335x/Kconfig | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+ create mode 100644 board/newboard_am335x/Kconfig
+
+diff --git a/board/newboard_am335x/Kconfig b/board/newboard_am335x/Kconfig
+new file mode 100644
+index 0000000..5786496
+--- /dev/null
++++ b/board/newboard_am335x/Kconfig
+@@ -0,0 +1,9 @@
++if TARGET_NEWBOARD_AM335X
++
++config SYS_BOARD
++	default "newboard_am335x"
++
++config SYS_CONFIG_NAME
++	default "new_am335x"
++
++endif
+-- 
+1.9.1
+
