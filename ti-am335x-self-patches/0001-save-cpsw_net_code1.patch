@@ -1,0 +1,648 @@
+From 8049628e5f241a495fa3920719946273447b8bd5 Mon Sep 17 00:00:00 2001
+From: zou cao <cao.zou@windriver.com>
+Date: Sat, 27 May 2017 10:44:22 +0800
+Subject: [PATCH] save code
+
+Signed-off-by: zou cao <cao.zou@windriver.com>
+---
+ drivers/net/ethernet/generic_ale.c | 228 +++++++++++++++++++++++++++++++++++--
+ drivers/net/ethernet/generic_dbg.c |  18 ---
+ drivers/net/ethernet/generic_net.c | 145 ++++++++++++++++-------
+ drivers/net/ethernet/generic_net.h |   2 +
+ 4 files changed, 322 insertions(+), 71 deletions(-)
+
+diff --git a/drivers/net/ethernet/generic_ale.c b/drivers/net/ethernet/generic_ale.c
+index 802d8fa..cd91115 100644
+--- a/drivers/net/ethernet/generic_ale.c
++++ b/drivers/net/ethernet/generic_ale.c
+@@ -54,13 +54,6 @@
+ #define ALE_SECURE	1
+ #define ALE_BLOCKED	2
+ 
+-enum cpsw_ale_port_state {
+-	ALE_PORT_STATE_DISABLE	= 0x00,
+-	ALE_PORT_STATE_BLOCK	= 0x01,
+-	ALE_PORT_STATE_LEARN	= 0x02,
+-	ALE_PORT_STATE_FORWARD	= 0x03,
+-};
+-
+ static inline int cpsw_ale_get_field(u32 *ale_entry, u32 start, u32 bits)
+ {
+ 	int idx;
+@@ -94,6 +87,38 @@ static inline void cpsw_ale_set_##name(u32 *ale_entry, u32 value)	\
+ 	cpsw_ale_set_field(ale_entry, start, bits, value);		\
+ }
+ 
++#define DEFINE_ALE_FIELD1(name, start)					\
++static inline int cpsw_ale_get_##name(u32 *ale_entry, u32 bits)		\
++{									\
++	return cpsw_ale_get_field(ale_entry, start, bits);		\
++}									\
++static inline void cpsw_ale_set_##name(u32 *ale_entry, u32 value,	\
++		u32 bits)						\
++{									\
++	cpsw_ale_set_field(ale_entry, start, bits, value);		\
++}
++
++enum cpsw_ale_port_state {
++	ALE_PORT_STATE_DISABLE	= 0x00,
++	ALE_PORT_STATE_BLOCK	= 0x01,
++	ALE_PORT_STATE_LEARN	= 0x02,
++	ALE_PORT_STATE_FORWARD	= 0x03,
++};
++
++
++static int cpsw_ale_match_vlan(struct cpsw_ale_regs *ale, u16 vid);
++void dump_ale_entry(u32 *data) 
++{
++	u32 i;
++	printk("ale_entry: \n");
++	for (i = 0; i < ALE_ENTRY_WORDS; i++) {
++		printk("%08x ", data[i]);
++	}
++	printk("\n");
++
++}
++
++
+ DEFINE_ALE_FIELD(entry_type,		60,	2)
+ DEFINE_ALE_FIELD(mcast_state,		62,	2)
+ DEFINE_ALE_FIELD(port_mask,		66,	3)
+@@ -102,6 +127,14 @@ DEFINE_ALE_FIELD(port_num,		66,	2)
+ DEFINE_ALE_FIELD(blocked,		65,	1)
+ DEFINE_ALE_FIELD(secure,		64,	1)
+ DEFINE_ALE_FIELD(mcast,			40,	1)
++DEFINE_ALE_FIELD1(vlan_untag_force,	24)
++DEFINE_ALE_FIELD1(vlan_reg_mcast,	16)
++DEFINE_ALE_FIELD1(vlan_unreg_mcast,	8)
++DEFINE_ALE_FIELD1(vlan_member_list,	0)
++DEFINE_ALE_FIELD(vlan_id,		48,	12)
++DEFINE_ALE_FIELD(vlan_unreg_mcast_idx,	20,	3)
++DEFINE_ALE_FIELD(vlan_reg_mcast_idx,	44,	3)
++
+ 
+ /* The MAC address field in the ALE entry cannot be macroized as above */
+ static inline void cpsw_ale_get_addr(u32 *ale_entry, u8 *addr)
+@@ -124,10 +157,10 @@ static int cpsw_ale_read(struct cpsw_ale_regs *ale_regs, int idx, u32 *ale_entry
+ {
+ 	int i;
+ 
+-	__raw_writel(idx, ale_regs + ALE_TABLE_CONTROL);
++	__raw_writel(idx, (void *)ale_regs + ALE_TABLE_CONTROL);
+ 
+ 	for (i = 0; i < ALE_ENTRY_WORDS; i++)
+-		ale_entry[i] = __raw_readl(ale_regs + ALE_TABLE + 4 * i);
++		ale_entry[i] = __raw_readl((void*)ale_regs + ALE_TABLE + 4 * i);
+ 
+ 	return idx;
+ }
+@@ -137,13 +170,30 @@ static int cpsw_ale_write(struct cpsw_ale_regs *ale_regs, int idx, u32 *ale_entr
+ 	int i;
+ 
+ 	for (i = 0; i < ALE_ENTRY_WORDS; i++)
+-		__raw_writel(ale_entry[i], ale_regs + ALE_TABLE + 4 * i);
++		__raw_writel(ale_entry[i], (void*)ale_regs + ALE_TABLE + 4 * i);
+ 
+-	__raw_writel(idx | ALE_TABLE_WRITE, ale_regs + ALE_TABLE_CONTROL);
++	__raw_writel(idx | ALE_TABLE_WRITE, (void*)ale_regs + ALE_TABLE_CONTROL);
+ 
+ 	return idx;
+ }
+ 
++void dump_ale_allentry(struct cpsw_ale_regs *ale_regs) 
++{
++	u32 ale_entry[ALE_ENTRY_WORDS];
++	int ret, idx;
++
++	printk("zz %s +\n", __func__);
++	for (idx = 0; idx < 1024; idx++) {
++		cpsw_ale_read(ale_regs, idx, ale_entry);
++
++		ret = cpsw_ale_get_entry_type(ale_entry);
++		if (ret != ALE_TYPE_ADDR && ret != ALE_TYPE_VLAN_ADDR)
++			continue;
++		dump_ale_entry(ale_entry);
++	}
++	printk("zz %s -\n", __func__);
++}
++
+ static int cpsw_ale_match_addr(struct cpsw_ale_regs *ale_regs, const u8 *addr)
+ {
+ 	u32 ale_entry[ALE_ENTRY_WORDS];
+@@ -171,8 +221,9 @@ static int cpsw_ale_match_free(struct cpsw_ale_regs *ale_regs)
+ 	for (idx = 0; idx < 1024; idx++) {
+ 		cpsw_ale_read(ale_regs, idx, ale_entry);
+ 		type = cpsw_ale_get_entry_type(ale_entry);
+-		if (type == ALE_TYPE_FREE)
++		if (type == ALE_TYPE_FREE) {
+ 			return idx;
++		}
+ 	}
+ 
+ 	return -ENOENT;
+@@ -184,6 +235,7 @@ int cpsw_ale_add_ucast(struct cpsw_ale_regs *ale_regs, const u8 *addr,
+ 	u32 ale_entry[ALE_ENTRY_WORDS] = {0, 0, 0};
+ 	int idx;
+ 
++	//printk("zz %s mac:%pM port:%d\n", __func__, addr, port);
+ 	cpsw_ale_set_entry_type(ale_entry, ALE_TYPE_ADDR);
+ 	cpsw_ale_set_addr(ale_entry, addr);
+ 	cpsw_ale_set_ucast_type(ale_entry, ALE_UCAST_PERSISTANT);
+@@ -207,6 +259,7 @@ int cpsw_ale_add_mcast(struct cpsw_ale_regs *priv, const u8 *addr,
+ 	u32 ale_entry[ALE_ENTRY_WORDS] = {0, 0, 0};
+ 	int idx, mask;
+ 
++	//printk("zz %s mac:%pM\n", __func__, addr);
+ 	idx = cpsw_ale_match_addr(priv, addr);
+ 	if (idx >= 0)
+ 		cpsw_ale_read(priv, idx, ale_entry);
+@@ -228,3 +281,154 @@ int cpsw_ale_add_mcast(struct cpsw_ale_regs *priv, const u8 *addr,
+ 	return 0;
+ }
+ 
++
++static void cpsw_ale_flush_mcast(struct cpsw_ale_regs *ale, u32 *ale_entry,
++				 int port_mask)
++{
++	int mask;
++
++	mask = cpsw_ale_get_port_mask(ale_entry);
++	if ((mask & port_mask) == 0)
++		return; /* ports dont intersect, not interested */
++	mask &= ~port_mask;
++
++	/* free if only remaining port is host port */
++	if (mask)
++		cpsw_ale_set_port_mask(ale_entry, mask);
++	else
++		cpsw_ale_set_entry_type(ale_entry, ALE_TYPE_FREE);
++}
++
++static int cpsw_ale_match_vlan(struct cpsw_ale_regs *ale, u16 vid)
++{
++	u32 ale_entry[ALE_ENTRY_WORDS];
++	int type, idx;
++
++	for (idx = 0; idx <1024; idx++) {
++		cpsw_ale_read(ale, idx, ale_entry);
++		type = cpsw_ale_get_entry_type(ale_entry);
++		if (type != ALE_TYPE_VLAN)
++			continue;
++		if (cpsw_ale_get_vlan_id(ale_entry) == vid)
++			return idx;
++	}
++	return -ENOENT;
++}
++
++/* ALE NetCP NU switch specific vlan functions */
++static void cpsw_ale_set_vlan_mcast(struct cpsw_ale_regs *ale, u32 *ale_entry,
++				    int reg_mcast, int unreg_mcast)
++{
++	int idx;
++
++	/* Set VLAN registered multicast flood mask */
++	//idx = cpsw_ale_get_vlan_reg_mcast_idx(ale_entry);
++	//writel(reg_mcast, ale + ALE_VLAN_MASK_MUX(idx));
++
++	/* Set VLAN unregistered multicast flood mask */
++	//idx = cpsw_ale_get_vlan_unreg_mcast_idx(ale_entry);
++	//writel(unreg_mcast, ale->params.ale_regs + ALE_VLAN_MASK_MUX(idx));
++}
++
++int cpsw_ale_add_vlan(struct cpsw_ale_regs *ale, u16 vid, int port, int untag,
++		      int reg_mcast, int unreg_mcast)
++{
++	u32 ale_entry[ALE_ENTRY_WORDS] = {0, 0, 0};
++	int idx;
++
++	idx = cpsw_ale_match_vlan(ale, vid);
++	if (idx >= 0)
++		cpsw_ale_read(ale, idx, ale_entry);
++
++	cpsw_ale_set_entry_type(ale_entry, ALE_TYPE_VLAN);
++	cpsw_ale_set_vlan_id(ale_entry, vid);
++
++	//cpsw_ale_set_vlan_untag_force(ale_entry, untag, ale->vlan_field_bits);
++	
++	cpsw_ale_set_vlan_mcast(ale, ale_entry, reg_mcast, unreg_mcast);
++	//cpsw_ale_set_vlan_member_list(ale_entry, port, ale->vlan_field_bits);
++	cpsw_ale_write(ale, idx, ale_entry);
++	return 0;
++}
++
++int cpsw_ale_del_vlan(struct cpsw_ale_regs *ale, u16 vid, int port_mask)
++{
++	return 0;
++}
++
++int cpsw_ale_flush_multicast(struct cpsw_ale_regs *ale, int port_mask, int vid)
++{
++	u32 ale_entry[ALE_ENTRY_WORDS] = {0, 0, 0};
++	int ret, idx;
++
++	for (idx = 0; idx < 1024; idx++) {
++		cpsw_ale_read(ale, idx, ale_entry);
++		ret = cpsw_ale_get_entry_type(ale_entry);
++		if (ret != ALE_TYPE_ADDR && ret != ALE_TYPE_VLAN_ADDR)
++			continue;
++		dump_ale_entry(ale_entry);
++
++		/* if vid passed is -1 then remove all multicast entry from
++		 * the table irrespective of vlan id, if a valid vlan id is
++		 * passed then remove only multicast added to that vlan id.
++		 * if vlan id doesn't match then move on to next entry.
++		 */
++#if 0
++		if (vid != -1 && cpsw_ale_get_vlan_id(ale_entry) != vid)
++			continue;
++#endif
++
++		if (cpsw_ale_get_mcast(ale_entry)) {
++			u8 addr[6];
++
++			cpsw_ale_get_addr(ale_entry, addr);
++			if (!is_broadcast_ether_addr(addr))
++				cpsw_ale_flush_mcast(ale, ale_entry, port_mask);
++		}
++
++		cpsw_ale_write(ale, idx, ale_entry);
++	}
++	return 0;
++}
++EXPORT_SYMBOL_GPL(cpsw_ale_flush_multicast);
++
++static u32 g_allmulti = 0;
++void cpsw_ale_set_allmulti(struct cpsw_ale_regs *ale, int allmulti)
++{
++	u32 ale_entry[ALE_ENTRY_WORDS];
++	int type, idx;
++	int unreg_mcast = 0;
++
++#if 0
++	/* Only bother doing the work if the setting is actually changing */
++	if (ale->allmulti == allmulti)
++		return;
++
++	/* Remember the new setting to check against next time */
++	ale->allmulti = allmulti;
++#endif
++
++	for (idx = 0; idx < 1204; idx++) {
++		cpsw_ale_read(ale, idx, ale_entry);
++
++		if (type != ALE_TYPE_VLAN)
++			continue;
++		dump_ale_entry(ale_entry);
++#if 0
++		type = cpsw_ale_get_entry_type(ale_entry);
++		if (type != ALE_TYPE_VLAN)
++			continue;
++
++		unreg_mcast =
++			cpsw_ale_get_vlan_unreg_mcast(ale_entry,
++						      ale->vlan_field_bits);
++		if (allmulti)
++			unreg_mcast |= 1;
++		else
++			unreg_mcast &= ~1;
++		cpsw_ale_set_vlan_unreg_mcast(ale_entry, unreg_mcast,
++					      ale->vlan_field_bits);
++		cpsw_ale_write(ale, idx, ale_entry);
++#endif
++	}
++}
+diff --git a/drivers/net/ethernet/generic_dbg.c b/drivers/net/ethernet/generic_dbg.c
+index 1937a82..fd5bf93 100644
+--- a/drivers/net/ethernet/generic_dbg.c
++++ b/drivers/net/ethernet/generic_dbg.c
+@@ -358,23 +358,6 @@ printk("RX0_FRAMBUFFER:%08x\n",__raw_readl(base+CPSW_CPDMA+0xe0));
+ #endif
+ }
+ 
+-void dump_ale_entry(u32 *data)
+-{
+-	u8 *p, *s;
+-	u8 i;
+-	p = (u8*)data;
+-	s = p;
+-
+-	p = s+6;
+-	printk("macaddr:\n");
+-	for (i = 0; i < 6; ++i) {
+-		printk("%02x ", p[i]);
+-	}
+-	printk("\n");
+-	printk("entry_type:%02x\n", p[8]);
+-	printk("port mask:%02x\n", p[11]);
+-}
+-
+ void dump_cpsw_control(void *base)
+ {
+ 	//#define CPSW_SS 	  0x4A100000
+@@ -438,4 +421,3 @@ void dump_cpsw_ale(void *base)
+ 	printk("PORTCTL4:%08x\n",__raw_readl(base+PORTCTL4));
+ 	printk("PORTCTL5:%08x\n",__raw_readl(base+PORTCTL5));
+ }
+-
+diff --git a/drivers/net/ethernet/generic_net.c b/drivers/net/ethernet/generic_net.c
+index 8c23e70..3fda1c0 100644
+--- a/drivers/net/ethernet/generic_net.c
++++ b/drivers/net/ethernet/generic_net.c
+@@ -31,6 +31,7 @@
+ #include "generic_net.h"
+ 
+ #define PHY_ID "7c0f1"
++#define ALE_ALL_PORTS  0x07
+ #define napi_tx_to_priv(napi)	container_of(napi, struct gen_net_data, napi_tx)
+ #define napi_rx_to_priv(napi)	container_of(napi, struct gen_net_data, napi)
+ #define CPSW_POLL_WEIGHT	64
+@@ -77,59 +78,79 @@ void cpsw_ale_port_state(struct cpsw_ale_regs *ale_regs, int port, u32 val)
+ 
+ }
+ 
++static inline void cpsw_add_default_vlan(struct gen_net_data *pdata)
++{
++	const int vlan = 0;
++	const int port = 0;
++	u32 reg;
++	int i;
++	int unreg_mcast_mask;
++	struct cpsw_slive_regs *slive_regs;
++	struct cpsw_port_slave_regs * slave_port;
++
++	printk("zz %s \n", __func__);
++
++	//writel(vlan, &priv->host_port_regs->port_vlan);
++	__raw_writel(vlan, &pdata->port_regs->port_vlan);
++
++#if 0
++	for (i = 0; i < priv->data.slaves; i++)
++		slave_write(priv->slaves + i, vlan, reg);
++#else
++
++	for (i = 0; i < 3; i++) {
++		slave_port = (struct cpsw_port_slave_regs*) ((void *)pdata->port_regs + i*0x100);
++		__raw_writel(vlan, &slave_port->port_vlan);
++	}
++#endif
++
++	unreg_mcast_mask = ALE_ALL_PORTS;
++#if 0
++	cpsw_ale_add_vlan(priv->ale, vlan, ALE_ALL_PORTS << port,
++			  ALE_ALL_PORTS << port, ALE_ALL_PORTS << port,
++			  unreg_mcast_mask << port);
++#endif
++}
++
+ static void cpsw_set_slave_mac(struct gen_net_data *pdata, int port, u8 *mac_addr)
+ {
+ 	struct cpsw_port_slave_regs __iomem *slave_regs;
+ 	slave_regs = (struct cpsw_port_slave_regs*)pdata->port_regs + port*0x100;
+-	printk(" lave_regs->sa_hi:%08x \n"  ,(u32)slave_regs->sa_hi);
+-	printk(" lave_regs->sa_lo:%08x \n"  ,(u32)slave_regs->sa_lo);
+ 	__raw_writel(mac_hi(mac_addr), &slave_regs->sa_hi);
+ 	__raw_writel(mac_lo(mac_addr), &slave_regs->sa_lo);
++	printk(" mac_lo(mac_addr):%08x  mac_hi(mac_addr):%08x \n"  ,(u32)mac_lo(mac_addr)  ,(u32)mac_hi(mac_addr));
+ }
+ 
+ static void cpsw_slave_init(struct gen_net_data *pdata, int port)
+ {
+-#if 0
+ 	struct cpsw_port_slave_regs * slave_port;
++	struct cpsw_slive_regs *slive_regs;
+ 	u8 mac_addr[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+-	u8 ethaddr_addr[6] = {0x78, 0xa5,0x04, 0xed, 0xd9, 0xe6};
++	if (port == 1) {
++		slive_regs = pdata->slive_regs;
++	} else if (port == 2) {
++		slive_regs = (struct cpsw_slive_regs *)(void*) pdata->slive_regs + 0x40;
++	} else {
++		dev_err(&pdata->pdev->dev,"slave port error\n");
++		return;
++	}
+ 	slave_port = (struct cpsw_port_slave_regs*) ((void *)pdata->port_regs + port*0x100);
+ 
+-	gen_cpsw_reset(&pdata->slive_regs->soft_reset);
++	gen_cpsw_reset(&slive_regs->soft_reset);
++	cpsw_ale_port_state(pdata->ale_regs, port, 0);
+ 	/* setup priority mapping */
+-	__raw_writel(0x76543210, &pdata->slive_regs->rx_pri_map);
+-
++	__raw_writel(0x76543210, &slive_regs->rx_pri_map);
+ 	__raw_writel(0x33221100, &slave_port->tx_pri_map);
+-
+ 	/* setup max packet size, and mac address */
+-	__raw_writel(PKT_MAX, &pdata->slive_regs->rx_maxlen);
+-	cpsw_set_slave_mac(pdata, 1, ethaddr_addr);
+-
+-	//slave->mac_control = 0;	/* no link yet */
+-
+-	/* enable forwarding */
+-	//slave_port = cpsw_get_slave_port(priv, slave->slave_num);
+-	#define ALE_PORT_STATE_FORWARD (0x03)
+-	cpsw_ale_port_state(pdata->ale_regs, 1, ALE_PORT_STATE_FORWARD);
++	__raw_writel(PKT_MAX, &slive_regs->rx_maxlen);
++	cpsw_set_slave_mac(pdata, 1, pdata->macaddr);
+ 
+-	cpsw_ale_add_mcast(pdata->ale_regs, mac_addr, 1 << 1);
+-#else
+-	struct cpsw_port_slave_regs * slave_port;
+-	u8 mac_addr[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+-	slave_port = (struct cpsw_port_slave_regs*) ((void *)pdata->port_regs + port*0x100);
++	if (port == 1) {
++		#define ALE_PORT_STATE_FORWARD (0x03)
++		cpsw_ale_port_state(pdata->ale_regs, port, ALE_PORT_STATE_FORWARD);
++	}
+ 
+-	gen_cpsw_reset(&pdata->slive_regs->soft_reset);
+-	/* setup priority mapping */
+-	__raw_writel(0x76543210, &pdata->slive_regs->rx_pri_map);
+-	__raw_writel(0x33221100, &slave_port->tx_pri_map);
+-	/* setup max packet size, and mac address */
+-	__raw_writel(PKT_MAX, &pdata->slive_regs->rx_maxlen);
+-	cpsw_set_slave_mac(pdata, 1, pdata->macaddr);
+-	#define ALE_PORT_STATE_FORWARD (0x03)
+-	cpsw_ale_port_state(pdata->ale_regs, port, ALE_PORT_STATE_FORWARD);
+ 	cpsw_ale_add_mcast(pdata->ale_regs, mac_addr, 1 << port);
+-#endif
+-
+ }
+ 
+ void phy_init(struct net_device *ndev)
+@@ -178,9 +199,7 @@ static void gen_cpsw_control_init(struct net_device *ndev)
+ 	int  offset;
+ 	u32 tmp, port;
+ 
+-	u8 mac_addr[6] = {0x98,0x90,0x96,0xc0,0xbe,0xc0};
+ 	u8 bmac_addr[6] = {0xff,0xff,0xff,0xff,0xff,0xff};
+-	memcpy(pdata->macaddr, mac_addr, 6);
+ 	//reset the control cpsw
+ 	gen_cpsw_reset(&pdata->regs->soft_reset);
+ 
+@@ -200,6 +219,7 @@ static void gen_cpsw_control_init(struct net_device *ndev)
+ 	__raw_writel(7, &pdata->regs->stat_port_en);
+ 
+ 	//#define ALE_PORTCTL 0x40
++#if 0
+ 	#define ALE_PORT_STATE_FORWARD (0x03)
+ 	port = 0;
+ 	offset = ALE_PORTCTL + 4*port;
+@@ -207,18 +227,24 @@ static void gen_cpsw_control_init(struct net_device *ndev)
+ 	tmp &= ~ALE_PORT_STATE_FORWARD;
+ 	tmp |= ALE_PORT_STATE_FORWARD;
+ 	__raw_writel(tmp, (void*)pdata->ale_regs+offset);
++#else
++	#define ALE_PORT_STATE_FORWARD (0x03)
++	cpsw_ale_port_state(pdata->ale_regs, 0, ALE_PORT_STATE_FORWARD);
++#endif
+ 
+ 	//init the entry table
+-	cpsw_ale_add_ucast(pdata->ale_regs, pdata->macaddr, port, 1);
++	cpsw_ale_add_ucast(pdata->ale_regs, pdata->macaddr, port, 0);
+ 	cpsw_ale_add_mcast(pdata->ale_regs, bmac_addr, 1<<port);
+ 
+ 	cpsw_slave_init(pdata, 1);
++	cpsw_slave_init(pdata, 2);
+ }
+ 
+ void gen_phy_adjust_link(struct net_device *ndev)
+ {
+ 	struct gen_net_data *pdata = netdev_priv(ndev);
+ 	struct phy_device	*phy = pdata->phydev;
++	u32 mac_control;
+ 	printk(" phy->link:%08x  phy->speed:%08x \n"  ,(u32)phy->link  ,(u32)phy->speed);
+ 	if (pdata->phydev->link) {
+ 		__raw_writel(0x8021, &pdata->slive_regs->mac_control);
+@@ -249,6 +275,8 @@ static int cpsw_ndo_open(struct net_device *ndev)
+ 	/* Bring the PHY up */
+ 
+ 	gen_cppi_init(pdata, 0x4a100000);
++	cpsw_add_default_vlan(pdata);
++
+ 	phy_start(pdata->phydev);
+ 	//fifo_loopback_test(pdata);
+ 	dev_info(&ndev->dev, "find phy id:%0x\n", pdata->phydev->phy_id);
+@@ -263,7 +291,7 @@ static int cpsw_ndo_open(struct net_device *ndev)
+ 			dev_err(&pdata->pdev->dev, "skb alloc failed\n");
+ 			continue;
+ 		}
+-		gen_submit_data(pdata, (void*)skb, skb->data, skb->len, DMA_FROM_DEVICE);
++		gen_submit_data(pdata, (void*)skb, skb->data, skb_tailroom(skb), DMA_FROM_DEVICE);
+ 	}
+ 
+ 	return 0;
+@@ -298,7 +326,8 @@ static int cpsw_ndo_start_xmit (struct sk_buff *skb,
+ static int generic_ndo_set_mac_address(struct net_device *ndev,
+ 						       void *addr)
+ {
+-	printk("zz %s \n", __func__);
++	//struct gen_net_data *pdata = netdev_priv(ndev);
++	//memcpy(ndev->dev_addr, pdata->macaddr, ETH_ALEN);
+ 	return 0;
+ }
+ 
+@@ -324,7 +353,25 @@ static void cpsw_ndo_tx_timeout(struct net_device *ndev)
+ 
+ static void cpsw_ndo_set_rx_mode(struct net_device *ndev)
+ {
++	struct gen_net_data *pdata = netdev_priv(ndev);
+ 	printk("zz %s \n", __func__);
++
++#if 0
++	cpsw_ale_set_allmulti(pdata->ale_regs, pdata->ndev->flags & IFF_ALLMULTI);
++
++	/* Clear all mcast from ALE */
++	cpsw_ale_flush_multicast(pdata->ale, ALE_ALL_PORTS, vid);
++#endif
++
++#if 0
++	if (!netdev_mc_empty(ndev)) {
++		struct netdev_hw_addr *ha;
++		/* program multicast address list into ALE register */
++		netdev_for_each_mc_addr(ha, ndev) {
++			cpsw_ale_add_mcast(pdata->ale_regs, (u8 *)ha->addr, ALE_ALL_PORTS << 1);
++		}
++	}
++#endif
+ }
+ 
+ static void cpsw_ndo_poll_controller(struct net_device *ndev)
+@@ -426,6 +473,7 @@ void gen_handle_rx(struct gen_net_data *pdata, void *token,  int len)
+ 	struct sk_buff *skb = token;
+ 	struct net_device	*ndev = skb->dev;
+ 	struct sk_buff *new_skb;
++	u32 *buf;
+ 
+ 	//new_skb = __netdev_alloc_new_skb_ip_align(pdata->ndev,
+ 	new_skb = __netdev_alloc_skb_ip_align(pdata->ndev,
+@@ -436,14 +484,25 @@ void gen_handle_rx(struct gen_net_data *pdata, void *token,  int len)
+ 		new_skb = skb;
+ 		goto error;	
+ 	} else {
++		buf = skb->data;
+ 		skb_put(skb, len);
++		printk("zz %s skb_len:%d %08x %08x %08x %08x %08x %08x %08x %08x\n", __func__, skb->len
++				,buf[0]
++				,buf[1]
++				,buf[2]
++				,buf[3]
++				,buf[4]
++				,buf[5]
++				,buf[6]
++				,buf[7]
++				);
+ 		skb->protocol = eth_type_trans(skb, pdata->ndev);
++		netif_receive_skb(skb);
+ 		ndev->stats.rx_bytes += len;
+ 		ndev->stats.rx_packets++;
+-		netif_receive_skb(skb);
+ 	}
+ 
+-	gen_submit_data(pdata, (void*)new_skb, new_skb->data, new_skb->len, DMA_FROM_DEVICE);
++	gen_submit_data(pdata, (void*)new_skb, new_skb->data, skb_tailroom(new_skb), DMA_FROM_DEVICE);
+ 	return;
+ error:
+ 	dev_err(&pdata->pdev->dev, "skb alloc failed\n");
+@@ -469,7 +528,8 @@ static irqreturn_t gen_tx_intr(int __always_unused irq, void *data)
+ {
+ 	struct gen_net_data *pdata = (struct gen_net_data *)data;
+ 
+-	//printk("zz %s \n", __func__);
++	//dump_cpsw_ale(pdata->ale_regs);
++	printk("zz %s \n", __func__);
+ 	cpdma_ctlr_eoi(pdata, 0, EOI_TX);
+ 	gen_intr_queue(pdata, DMA_TO_DEVICE);
+ 	cpdma_ctlr_eoi(pdata, 1, EOI_TX);
+@@ -509,6 +569,7 @@ static int generic_net_probe(struct platform_device *pdev)
+ 	int ret, irq;
+ 	struct resource * res;
+ 	int k;
++	u8 mac_addr[6] = {0x98,0x90,0x96,0xc0,0xbe,0xc0};
+ 
+ 	ndev = alloc_etherdev(sizeof(struct net_device));
+ 	if (!ndev) {
+@@ -564,6 +625,8 @@ static int generic_net_probe(struct platform_device *pdev)
+ 	g_data->ndev = ndev;
+ 	g_data->pdev = pdev;
+ 	g_data->dev = &ndev->dev;
++	memcpy(g_data->macaddr, mac_addr, 6);
++	memcpy(ndev->dev_addr, g_data->macaddr, ETH_ALEN);
+ 
+ #define CPSW_POLL_WEIGHT	64
+ 	//netif_napi_add(ndev, &g_data->napi, cpsw_poll, CPSW_POLL_WEIGHT);
+diff --git a/drivers/net/ethernet/generic_net.h b/drivers/net/ethernet/generic_net.h
+index 9064b10..e418442 100644
+--- a/drivers/net/ethernet/generic_net.h
++++ b/drivers/net/ethernet/generic_net.h
+@@ -155,6 +155,8 @@ int gen_process_queue(struct gen_net_data *pdata, int directory);
+ void dump_cpsw_control(void *base);
+ void dump_cpsw_SL12(void *base);
+ void dump_cpsw_ale(void *base);
++void cpsw_ale_set_allmulti(struct cpsw_ale_regs *ale, int allmulti);
++void dump_ale_allentry(struct cpsw_ale_regs *ale_regs);
+ 
+ enum EOI_TYPE {
+ 	EOI_TX = 1,
+-- 
+1.9.1
+
