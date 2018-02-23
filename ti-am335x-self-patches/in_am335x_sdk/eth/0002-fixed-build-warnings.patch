@@ -1,0 +1,228 @@
+From 56d2a7887ecdeab54073ad3bf2dea606845aa5bd Mon Sep 17 00:00:00 2001
+From: zou cao <cao.zou@windriver.com>
+Date: Fri, 29 Sep 2017 11:13:45 +0800
+Subject: [PATCH 2/7] fixed build warnings
+
+---
+ drivers/net/ethernet/Kconfig                       |  1 +
+ drivers/net/ethernet/Makefile                      |  1 +
+ drivers/net/ethernet/newam335x/Kconfig             |  1 -
+ drivers/net/ethernet/newam335x/newam335x_debug.c   |  2 +-
+ .../net/ethernet/newam335x/newam335x_eth_cpdam.c   | 17 +++++-----
+ .../net/ethernet/newam335x/newam335x_eth_cpsw.c    | 37 ++++++++++++----------
+ 6 files changed, 31 insertions(+), 28 deletions(-)
+
+diff --git a/drivers/net/ethernet/Kconfig b/drivers/net/ethernet/Kconfig
+index eadcb05..ede6d78 100644
+--- a/drivers/net/ethernet/Kconfig
++++ b/drivers/net/ethernet/Kconfig
+@@ -167,6 +167,7 @@ source "drivers/net/ethernet/stmicro/Kconfig"
+ source "drivers/net/ethernet/sun/Kconfig"
+ source "drivers/net/ethernet/tehuti/Kconfig"
+ source "drivers/net/ethernet/ti/Kconfig"
++source "drivers/net/ethernet/newam335x/Kconfig"
+ source "drivers/net/ethernet/tile/Kconfig"
+ source "drivers/net/ethernet/toshiba/Kconfig"
+ source "drivers/net/ethernet/tundra/Kconfig"
+diff --git a/drivers/net/ethernet/Makefile b/drivers/net/ethernet/Makefile
+index 1367afc..b12f01e 100644
+--- a/drivers/net/ethernet/Makefile
++++ b/drivers/net/ethernet/Makefile
+@@ -77,6 +77,7 @@ obj-$(CONFIG_NET_VENDOR_STMICRO) += stmicro/
+ obj-$(CONFIG_NET_VENDOR_SUN) += sun/
+ obj-$(CONFIG_NET_VENDOR_TEHUTI) += tehuti/
+ obj-$(CONFIG_NET_VENDOR_TI) += ti/
++obj-$(CONFIG_NET_VENDOR_NEWAM335X) += newam335x/
+ obj-$(CONFIG_TILE_NET) += tile/
+ obj-$(CONFIG_NET_VENDOR_TOSHIBA) += toshiba/
+ obj-$(CONFIG_NET_VENDOR_TUNDRA) += tundra/
+diff --git a/drivers/net/ethernet/newam335x/Kconfig b/drivers/net/ethernet/newam335x/Kconfig
+index 67e8054..dde0419 100644
+--- a/drivers/net/ethernet/newam335x/Kconfig
++++ b/drivers/net/ethernet/newam335x/Kconfig
+@@ -5,5 +5,4 @@ config NET_VENDOR_NEWAM335X
+ 
+ config NEWAM335X_ETH_CPSW
+ 	tristate "NEWAM335X CPSW Switch Support"
+-	depends on ARCH_NEWAM335X
+ 	select PHYLIB
+diff --git a/drivers/net/ethernet/newam335x/newam335x_debug.c b/drivers/net/ethernet/newam335x/newam335x_debug.c
+index 69c4ade..c663fb9 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_debug.c
++++ b/drivers/net/ethernet/newam335x/newam335x_debug.c
+@@ -7,7 +7,7 @@
+ #include <linux/device.h>
+ #include "newam335x_eth_cpsw.h"
+ #include "newam335x_eth_cpdam.h"
+-#include <linux/newam335x_debug.h>
++//#include <linux/newam335x_debug.h>
+ 
+ 
+ void dump_skb(struct sk_buff *skb)
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.c b/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.c
+index f26eda9..4e119b0 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.c
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.c
+@@ -7,7 +7,7 @@
+ #include <linux/device.h>
+ #include "newam335x_eth_cpsw.h"
+ #include "newam335x_eth_cpdam.h"
+-#include <linux/newam335x_debug.h>
++//#include <linux/newam335x_debug.h>
+ 
+ void loop_dealy(int ms)
+ {
+@@ -33,15 +33,13 @@ void newam335x_cpdma_dump(struct newam335x_eth_priv *priv, struct cpdma_desc *de
+ 	printk("dma_tx_pend:%08x \n",__raw_readl(priv->dma_regs+0x80));
+ 	printk("wr_rx_status:%08x \n",__raw_readl((void*)priv->wr_regs+0x44));
+ 	printk("wr_tx_status:%08x \n",__raw_readl((void*)priv->wr_regs+0x48));
+-	newam335x_interrupt_debug(58);
+ }
+ 
+ void newam335x_cpdma_rx_state(struct newam335x_eth_priv *priv)
+ {
+ 	struct cpdma_desc *desc;
+ 	struct cpdma_chan *chan;
+-	struct transfer_data * desc_data, *desc_data_head;
+-	u32 status, len;
++	struct transfer_data * desc_data;
+ 
+ 	chan = &priv->rx_chan;
+ 
+@@ -85,6 +83,7 @@ void cpdma_free(struct newam335x_eth_priv *priv, struct transfer_data *desc_data
+ int cpdma_eoi_write(struct newam335x_eth_priv *priv, int val)
+ {
+ 	__raw_writel(val, priv->dma_regs+ CPDMA_EIO_VECT);
++	return 0;
+ }
+ 
+ int cpdma_submit(struct newam335x_eth_priv *priv, struct sk_buff *skb, bool isTx)
+@@ -93,7 +92,7 @@ int cpdma_submit(struct newam335x_eth_priv *priv, struct sk_buff *skb, bool isTx
+ 	struct transfer_data *desc_data, *prev_data;
+ 	struct cpdma_chan *chan;
+ 	dma_addr_t dma_addr;
+-	u32 mode, start, ret, len;
++	u32 mode, ret, len;
+ 
+ 	desc_data = cpdma_alloc(priv);
+ 	if (!desc_data) {
+@@ -178,14 +177,14 @@ void cpdma_enable(struct newam335x_eth_priv *priv, bool enable)
+ void newam335x_cpdam_init(struct newam335x_eth_priv *priv)
+ {
+ 	u32 val;
+-	long start;
+-	int i, ret;
++	unsigned long start;
++	int i;
+ 
+-	INIT_LIST_HEAD(&priv->tx_chan);
++	INIT_LIST_HEAD(&priv->tx_chan.list);
+ 	priv->tx_chan.hdp       = priv->dma_regs + CPDMA_TXHDP_VER2;
+ 	priv->tx_chan.cp        = priv->dma_regs + CPDMA_TXCP_VER2;
+ 
+-	INIT_LIST_HEAD(&priv->rx_chan);
++	INIT_LIST_HEAD(&priv->rx_chan.list);
+ 	priv->rx_chan.hdp       = priv->dma_regs + CPDMA_RXHDP_VER2;
+ 	priv->rx_chan.cp        = priv->dma_regs + CPDMA_RXCP_VER2;
+ 	priv->rx_chan.rxfree    = priv->dma_regs + CPDMA_RXFREE;
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
+index ce53e5a..94d269e 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
+@@ -99,7 +99,7 @@ const struct ethtool_ops newam335x_netdev_tool = {
+ /* Set a self-clearing bit in a register, and wait for it to clear */
+ static int setbit_and_wait_for_clear32(void *addr)
+ {
+-	long timeout = jiffies + 4*HZ;
++	unsigned long timeout = jiffies + 4*HZ;
+ 
+ 	__raw_writel(1, addr);
+ 	while (__raw_readl(addr) & 1) {
+@@ -116,9 +116,6 @@ static void newam335x_slave_init(struct newam335x_eth_priv *priv, int port)
+ 	const u8 net_bcast_ethaddr[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+ 	struct cpsw_sl_regs *slave;
+ 	struct cpsw_port1_regs *port_reg;
+-	int offset = CPSW_ALE_PORTCTL0+ 4 * port;
+-	u32 val;
+-	u32 tmp, mask = 0x3;
+ 
+ 	if (port == 0) {
+ 		slave = priv->sl1_regs;
+@@ -155,7 +152,6 @@ static void newam335x_interrupt_init(struct newam335x_eth_priv *priv)
+ {
+ #define WR_CONTORL_PLUS_EN(val)  (val<<16)
+ 	struct cpsw_wr_regs *wr_regs = priv->wr_regs;
+-	u32 val;
+ 
+ 	//setbit_and_wait_for_clear32(&wr_regs->soft_reset);
+ 
+@@ -167,7 +163,6 @@ static void newam335x_interrupt_init(struct newam335x_eth_priv *priv)
+ 
+ static int newam335x_eth_init(struct net_device *ndev)
+ {
+-	u32 start;
+ 	u32 val;
+ 	struct newam335x_eth_priv *priv = (struct newam335x_eth_priv *) netdev_priv(ndev);
+ 
+@@ -503,7 +498,7 @@ static int newam335x_eth_probe(struct platform_device *pdev)
+ 	struct resource *res;
+ 	struct newam335x_eth_priv *priv;
+ 	struct net_device *ndev;
+-	int i, ret, irq, k=0;
++	int i, ret=0, irq, k=0;
+ 	void __iomem *base;
+ 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+ 	if (!res) {
+@@ -526,7 +521,7 @@ static int newam335x_eth_probe(struct platform_device *pdev)
+ 		return -EINVAL;
+ 	}
+ 
+-	printk("zz %s base:%08x \n",__func__, base);
++	printk("zz %s base:%08x \n",__func__, (int)base);
+ 
+ 	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
+ 	if (!res) {
+@@ -604,7 +599,7 @@ static int newam335x_eth_probe(struct platform_device *pdev)
+ 	priv->defaut_mac[5] = 0xfb;
+ #endif
+ 	netif_napi_add(ndev, &priv->napi_rx, eth_rx_poll, POLL_WEIGHT);
+-	netif_tx_napi_add(ndev, &priv->napi_tx, eth_tx_poll, POLL_WEIGHT);
++	//netif_tx_napi_add(ndev, &priv->napi_tx, eth_tx_poll, POLL_WEIGHT);
+ 
+ 	ether_addr_copy(ndev->dev_addr, priv->defaut_mac);
+ 	printk("mac: %02x:%02x:%02x:%02x:%02x:%02x \n",
+@@ -638,15 +633,23 @@ static int newam335x_eth_remove(struct platform_device *pdev)
+   return 0;
+ }
+ 
++static const struct of_device_id cpsw_of_mtable[] = {
++	{ .compatible = "ti,cpsw", },
++	{ .compatible = "ti,am335x-cpsw", },
++	{ .compatible = "ti,am4372-cpsw", },
++	{ .compatible = "ti,dra7-cpsw", },
++	{ /* sentinel */ },
++};
++MODULE_DEVICE_TABLE(of, cpsw_of_mtable);
+ static struct platform_driver newam335x_eth_driver = {
+-  .driver = {
+-	  .name    = "newam335x_eth_cpsw",
+-	  .owner   = THIS_MODULE,
+-	  //.pm    = &cpsw_pm_ops,
+-	  //.of_match_table = cpsw_of_mtable,
+-  },
+-  .probe = newam335x_eth_probe,
+-  .remove = newam335x_eth_remove,
++	.driver = {
++		.name    = "newam335x_eth_cpsw",
++		.owner   = THIS_MODULE,
++		//.pm    = &cpsw_pm_ops,
++		.of_match_table = cpsw_of_mtable,
++	},
++	.probe = newam335x_eth_probe,
++	.remove = newam335x_eth_remove,
+ };
+ 
+ module_platform_driver(newam335x_eth_driver);
+-- 
+1.9.1
+

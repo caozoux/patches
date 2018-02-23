@@ -1,0 +1,153 @@
+From 4ad82d5927010fd3d9c6305770e20c11f1504dfd Mon Sep 17 00:00:00 2001
+From: zou cao <cao.zou@windriver.com>
+Date: Mon, 16 Oct 2017 17:28:30 +0800
+Subject: [PATCH 7/7] newam335x:eth: mount nfs root fs is ok with newam335x_eth
+
+---
+ drivers/net/ethernet/newam335x/Makefile             |  2 +-
+ .../net/ethernet/newam335x/newam335x_eth_cpdam.c    | 21 ++++++++++++++-------
+ drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c | 17 +++++++++++------
+ drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h |  1 +
+ 4 files changed, 27 insertions(+), 14 deletions(-)
+
+diff --git a/drivers/net/ethernet/newam335x/Makefile b/drivers/net/ethernet/newam335x/Makefile
+index 6db0218..ee7b637 100644
+--- a/drivers/net/ethernet/newam335x/Makefile
++++ b/drivers/net/ethernet/newam335x/Makefile
+@@ -1,4 +1,4 @@
+-ccflags-y := -DDEBUG
++#ccflags-y := -DDEBUG
+ 
+ obj-$(CONFIG_NEWAM335X_ETH_CPSW) := newam335x_eth_drv.o
+ newam335x_eth_drv-y  := newam335x_eth_cpsw.o newam335x_eth_ale.o newam335x_eth_cpdam.o newam335x_mdio.o newam335x_debug.o
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.c b/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.c
+index 5386991..b60d9d5 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.c
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.c
+@@ -196,19 +196,21 @@ int cpdma_submit(struct newam335x_eth_priv *priv, struct cpdma_chan *chan, struc
+ 		return -ENOMEM;
+ 	}
+ 
+-	//dma_addr = dma_map_single(&priv->pdev->dev, skb->data, skb->len, chan->dir);
+-	dma_addr = dma_map_single(&priv->pdev->dev, skb->data, skb->len, DMA_FROM_DEVICE);
++	dma_addr = dma_map_single(&priv->pdev->dev, skb->data, skb->len, chan->dir);
+ 
+ 	ret = dma_mapping_error(&priv->pdev->dev, dma_addr);
+ 	if (ret)
+ 		dev_err(&priv->pdev->dev, "dma map failed\n");
+ 
+ 	len=skb->len;
++	if (len < chan->min_len)
++		len = chan->min_len;
++
+ 	//printk("zz %s desc:%08x \n",__func__, DESC_PHYADDR(priv, desc));
+ 
+ 	mode = CPDMA_DESC_OWNER | CPDMA_DESC_SOP | CPDMA_DESC_EOP;
+-	mode |= (CPDMA_DESC_TO_PORT_EN |		\
+-		 (port << CPDMA_TO_PORT_SHIFT));
++	//mode |= (CPDMA_DESC_TO_PORT_EN | (port << CPDMA_TO_PORT_SHIFT));
++		 
+ 	desc_write(desc, hw_next,   0);
+ 	desc_write(desc, hw_buffer, dma_addr);
+ 	desc_write(desc, hw_len,    len);
+@@ -273,10 +275,13 @@ int newam335x_cpdam_init(struct newam335x_eth_priv *priv, desc_handle_callback t
+ 	priv->tx_chan.head = priv->tx_chan.tail = NULL;
+ 	priv->tx_chan.rxfree    = NULL;
+ 	priv->tx_chan.dir = DMA_TO_DEVICE;
+-	priv->tx_chan.start_number =  priv->pool->number/2;
+-	priv->tx_chan.end_number =  priv->pool->number;
++	//priv->tx_chan.start_number =  priv->pool->number/2;
++	//priv->tx_chan.end_number =  priv->pool->number;
++	priv->tx_chan.start_number =  65;
++	priv->tx_chan.end_number =  130;
+ 	priv->tx_chan.eio_val =  2;
+ 	priv->tx_chan.handle = tx_handle;
++	priv->tx_chan.min_len = 60;
+ 	spin_lock_init(&priv->tx_chan.lock);
+ 
+ 	priv->rx_chan.hdp       = priv->dma_regs + CPDMA_RXHDP_VER2;
+@@ -285,9 +290,11 @@ int newam335x_cpdam_init(struct newam335x_eth_priv *priv, desc_handle_callback t
+ 	priv->rx_chan.head = priv->tx_chan.tail = NULL;
+ 	priv->rx_chan.dir = DMA_FROM_DEVICE;
+ 	priv->rx_chan.start_number =  0;
+-	priv->rx_chan.end_number =  priv->pool->number/2;
++	//priv->rx_chan.end_number =  priv->pool->number/2;
++	priv->rx_chan.end_number =  64;
+ 	priv->rx_chan.eio_val =  1;
+ 	priv->rx_chan.handle = rx_handle;
++	priv->tx_chan.min_len = 60;
+ 	spin_lock_init(&priv->rx_chan.lock);
+ 
+ 	__raw_writel(0, priv->dma_regs + CPDMA_TXCONTROL);
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
+index 9fd0975..ad0296e 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
+@@ -30,7 +30,7 @@
+ #include "newam335x_eth_cpdam.h"
+ #include "newam335x_debug.h"
+ #include "ale.h"
+-
++#define CPSW_MIN_PACKET_SIZE    60
+ #define CPSW_MAX_PACKET_SIZE	(1500 + 14 + 4 + 4)
+ #define POLL_WEIGHT (64)
+ #define NEWAM335X_CPSW_MAX_QUEUES 8
+@@ -168,9 +168,7 @@ static int newam335x_eth_init(struct net_device *ndev)
+ 	u32 val;
+ 	int ret;
+ 
+-	printk("zz %s priv->ss_regs->soft_reset:%08x \n",__func__, (int)&priv->ss_regs->soft_reset);
+ 	setbit_and_wait_for_clear32(&priv->ss_regs->soft_reset);
+-	printk("zz %s priv->ss_regs->soft_reset:%08x \n",__func__, (int)&priv->ss_regs->soft_reset);
+ 
+ 	//enable ale
+ 	val = readl(priv->ale_regs+CPSW_ALE_CONTROL);
+@@ -319,7 +317,15 @@ static int cpsw_ndo_start_xmit (struct sk_buff *skb,
+ 	int ret;
+ 	priv = netdev_priv(ndev);
+ 
+-	printk("zz %s %d \n", __func__, __LINE__);
++	if (skb_padto(skb, CPSW_MIN_PACKET_SIZE)) {
++		dev_err(priv->dev, "packet pad failed\n");
++		ndev->stats.tx_dropped++;
++		return NETDEV_TX_OK;
++	}
++
++	if (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP)
++		skb_shinfo(skb)->tx_flags |= SKBTX_IN_PROGRESS;
++
+ 	skb_tx_timestamp(skb);
+ 	ret = cpdma_submit(priv, &priv->tx_chan, skb, 0);
+ 
+@@ -359,7 +365,7 @@ static int cpsw_ndo_vlan_rx_add_vid(struct net_device *ndev,
+                                __be16 proto, u16 vid)
+ {
+ 	printk("zz %s %d \n", __func__, __LINE__);
+-      return 0;
++    return 0;
+ }
+   
+ static int cpsw_ndo_vlan_rx_kill_vid(struct net_device *ndev,
+@@ -446,7 +452,6 @@ static int eth_tx_poll(struct napi_struct *napi_tx, int budget)
+ static int handle_tx_package(struct newam335x_eth_priv *priv, struct sk_buff *skb, int len)
+ {
+ 	struct net_device *ndev = priv->ndev;
+-	printk("zz %s %d \n", __func__, __LINE__);
+ 
+ 	//dump_skb(skb, len);
+ 	ndev->stats.tx_packets++;
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
+index 5346884..70f845d 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
+@@ -75,6 +75,7 @@ struct cpdma_chan {
+ 	int eio_val; //tx 2, rx 1
+ 	int start_number;
+ 	int end_number;
++	int min_len;
+ 	enum dma_data_direction	dir;
+ 	spinlock_t lock;
+ };
+-- 
+1.9.1
+

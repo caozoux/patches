@@ -1,0 +1,782 @@
+From ae653fcd1e99d02f0334198df6d43de2d38308b6 Mon Sep 17 00:00:00 2001
+From: zou cao <cao.zou@windriver.com>
+Date: Thu, 12 Oct 2017 11:05:17 +0800
+Subject: [PATCH 5/7] newam335x: enable vlan aware and fixed rx package drop
+
+---
+ drivers/net/ethernet/newam335x/ale.h               |   2 +-
+ drivers/net/ethernet/newam335x/newam335x_debug.c   |  34 ++++-
+ drivers/net/ethernet/newam335x/newam335x_debug.h   |   3 +-
+ drivers/net/ethernet/newam335x/newam335x_eth_ale.c |  18 ++-
+ .../net/ethernet/newam335x/newam335x_eth_cpdam.c   |  98 +++++++-------
+ .../net/ethernet/newam335x/newam335x_eth_cpdam.h   |   9 +-
+ .../net/ethernet/newam335x/newam335x_eth_cpsw.c    | 147 +++++++++++++++------
+ .../net/ethernet/newam335x/newam335x_eth_cpsw.h    |  19 ++-
+ drivers/net/ethernet/newam335x/newam335x_mdio.c    |   4 +-
+ 9 files changed, 238 insertions(+), 96 deletions(-)
+
+diff --git a/drivers/net/ethernet/newam335x/ale.h b/drivers/net/ethernet/newam335x/ale.h
+index fa59945..32fed39 100644
+--- a/drivers/net/ethernet/newam335x/ale.h
++++ b/drivers/net/ethernet/newam335x/ale.h
+@@ -34,6 +34,6 @@ void update_ale_port(struct newam335x_eth_priv *priv, int port, int val);
+ int ale_init(struct newam335x_eth_priv *priv, unsigned char *addr);
+ int cpsw_ale_add_mcast(struct newam335x_eth_priv *priv, const u8 *addr,int port_mask);
+ void ale_dump(struct newam335x_eth_priv *priv);
+-			      
++void add_default_vlan(struct newam335x_eth_priv *priv);
+ #endif
+ 
+diff --git a/drivers/net/ethernet/newam335x/newam335x_debug.c b/drivers/net/ethernet/newam335x/newam335x_debug.c
+index c663fb9..aded207 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_debug.c
++++ b/drivers/net/ethernet/newam335x/newam335x_debug.c
+@@ -9,13 +9,45 @@
+ #include "newam335x_eth_cpdam.h"
+ //#include <linux/newam335x_debug.h>
+ 
++void dump_mem(void *addr, int len)
++{
++	int i, l;
++	int *buf = (int*)addr;
++	for (i = 0; i < len/4; i = i+16) {
++		printk("%08x: ", i*4);
++		for (l = 0;  l < 16; ++l) {
++			if ((i+l)>= len) {
++				printk("\n");
++				return;
++			}
++			printk("%08x ",buf[i+l]);
++		}
++		printk("\n");
++	}
++}
+ 
+-void dump_skb(struct sk_buff *skb)
++void dump_skb(struct sk_buff *skb, int len)
+ {
++	int i, l;
++	int off;
++	char *buf = (char*)skb->data;
+ 	printk("zz %s sdk->len:%08x \n",__func__, (int)skb->len);
+ 	printk("zz %s sdk->data_len:%08x \n",__func__, (int)skb->data_len);
+ 	printk("zz %s skb->mac_len:%08x \n",__func__, (int)skb->mac_len);
+ 	printk("zz %s skb->pkt_type:%08x \n",__func__, (int)skb->pkt_type);
++
++	for (i = 0; i < len; i = i+16) {
++		printk("%08x: ", i);
++		for (l = 0;  l < 16; ++l) {
++			if ((i+l)>= len) {
++				printk("\n");
++				return;
++			}
++			printk("%02x ",buf[i+l]);
++		}	
++		printk("\n");
++	}
++
+ }
+ 
+ 
+diff --git a/drivers/net/ethernet/newam335x/newam335x_debug.h b/drivers/net/ethernet/newam335x/newam335x_debug.h
+index 115f68c..1ad42fd 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_debug.h
++++ b/drivers/net/ethernet/newam335x/newam335x_debug.h
+@@ -1,6 +1,7 @@
+ #ifndef __NEWAM335X_DEBUG_H__
+ #define __NEWAM335X_DEBUG_H__
+ 
+-void dump_skb(struct sk_buff *skb);
++void dump_skb(struct sk_buff *skb, int len);
++void dump_mem(void *addr, int len);
+ 
+ #endif /* ifndef __NEWAM335X_DEBUG_H__ */
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_ale.c b/drivers/net/ethernet/newam335x/newam335x_eth_ale.c
+index e3d8c05..d22904b 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_ale.c
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_ale.c
+@@ -154,6 +154,8 @@ int cpsw_ale_add_mcast(struct newam335x_eth_priv *priv, const u8 *addr,
+ 		return -ENOMEM;
+ 	}
+ 
++	printk("zz %s idx:%08x ale_entry[0]:%08x \ale_entry[0]:%08x \ale_entry[0]:%08x \n",__func__,
++			(int)idx, ale_entry[0], ale_entry[1], ale_entry[2]);
+ 	cpsw_ale_write(priv, idx, ale_entry);
+ 
+ 	return 0;
+@@ -171,7 +173,7 @@ int ale_init(struct newam335x_eth_priv *priv, u8 *addr)
+ 		ale_bit_set(ale_entry, 40 - 8*i, 8, addr[i]);
+ 
+ 	ale_bit_set(ale_entry, ALEBIT_UCAST_TYPE, 2 , ALE_UCAST_PERSISTANT);
+-	ale_bit_set(ale_entry, ALEBIT_SECIRE, 1, 1);
++	ale_bit_set(ale_entry, ALEBIT_SECIRE, 1, 0);
+ 	ale_bit_set(ale_entry, ALEBIT_BLOCKED, 1, 0);
+ 	ale_bit_set(ale_entry, ALEBIT_PORT_NUM, 2, 0);
+ 
+@@ -185,10 +187,12 @@ int ale_init(struct newam335x_eth_priv *priv, u8 *addr)
+ 		return -ENOMEM;
+ 	}
+ 
++	printk("zz %s idx:%08x ale_entry[0]:%08x \ale_entry[0]:%08x \ale_entry[0]:%08x \n",__func__,
++			(int)idx, ale_entry[0], ale_entry[1], ale_entry[2]);
+ 	//add the ucase addr
+ 	cpsw_ale_write(priv, idx, ale_entry);
+ 	
+-	cpsw_ale_add_mcast(priv, net_bcast_ethaddr, 1<<1);
++	cpsw_ale_add_mcast(priv, net_bcast_ethaddr, 1);
+ 
+ 	return 0;
+ }
+@@ -203,3 +207,13 @@ void update_ale_port(struct newam335x_eth_priv *priv, int port, int val)
+ 	tmp |= val & mask;
+ 	__raw_writel(tmp, priv->ale_regs + offset);
+ }
++
++void add_default_vlan(struct newam335x_eth_priv *priv)
++{
++	u32 ale_entry[3] = {0, 0, 0};
++	ale_entry[0] = 0x00000000;
++	ale_entry[1] = 0x20000000;
++	ale_entry[2] = 0x07070607;
++
++	cpsw_ale_write(priv, 2, ale_entry);
++}
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.c b/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.c
+index 188a755..16bcfa1 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.c
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.c
+@@ -27,12 +27,13 @@ void newam335x_cpdma_dump(struct newam335x_eth_priv *priv, struct cpdma_desc *de
+ 	printk("hw_buffer:%08x \n",desc_read(desc, hw_buffer));
+ 	printk("hw_len:%08x \n",desc_read(desc, hw_len));
+ 	printk("hw_mode:%08x \n",desc_read(desc, hw_mode));
++	printk("token:%08x \n",desc_read(desc, token));
+ 	printk("sw_buffer:%08x \n",desc_read(desc, sw_buffer));
+ 	printk("sw_len:%08x \n",desc_read(desc, sw_len));
+ 	printk("dma_status:%08x \n",__raw_readl(priv->dma_regs+0x24));
+-	printk("dma_tx_pend:%08x \n",__raw_readl(priv->dma_regs+0x80));
+-	printk("wr_rx_status:%08x \n",__raw_readl((void*)priv->wr_regs+0x44));
+-	printk("wr_tx_status:%08x \n",__raw_readl((void*)priv->wr_regs+0x48));
++	//printk("dma_tx_pend:%08x \n",__raw_readl(priv->dma_regs+0x80));
++	//printk("wr_rx_status:%08x \n",__raw_readl((void*)priv->wr_regs+0x44));
++	//printk("wr_tx_status:%08x \n",__raw_readl((void*)priv->wr_regs+0x48));
+ }
+ 
+ void newam335x_cpdma_rx_state(struct newam335x_eth_priv *priv)
+@@ -74,7 +75,7 @@ int newam335x_cpdma_pool_create(struct newam335x_eth_priv *priv)
+ 	return 0;
+ }
+ 
+-struct cpdma_desc* cpdma_alloc(struct newam335x_eth_priv *priv, bool isTx)
++struct cpdma_desc* cpdma_alloc(struct newam335x_eth_priv *priv, struct cpdma_chan *chan)
+ {
+ 	struct cpdma_desc *desc = NULL;
+ 	struct cpdma_desc_pool *pool = priv->pool;
+@@ -82,15 +83,10 @@ struct cpdma_desc* cpdma_alloc(struct newam335x_eth_priv *priv, bool isTx)
+ 	unsigned long flags;
+ 	int index;
+ 
+-	if (isTx) {
+-		desc_start = pool->number/2;
+-		desc_end = pool->number;
+-	} else {
+-		desc_start = 0;
+-		desc_end= pool->number/2;
+-	}
++	desc_start = chan->start_number;
++	desc_end = chan->end_number;
+ 
+-	spin_lock_irqsave(&pool->lock, flags);
++	//spin_lock_irqsave(&pool->lock, flags);
+ 	index = bitmap_find_next_zero_area(pool->bitmap,
+ 				desc_end, desc_start, 1, 0);
+ 
+@@ -99,21 +95,15 @@ struct cpdma_desc* cpdma_alloc(struct newam335x_eth_priv *priv, bool isTx)
+ 		bitmap_set(pool->bitmap, index, 1);
+ 	}
+ 
+-	spin_unlock_irqrestore(&pool->lock, flags);
++	//spin_unlock_irqrestore(&pool->lock, flags);
+ 	return desc;
+ }
+ 
+ void cpdma_free(struct newam335x_eth_priv *priv, struct cpdma_chan *chan, struct cpdma_desc *desc)
+ {
+ 	struct cpdma_desc_pool *pool = priv->pool;
+-	struct sk_buff *skb;
+-	int len;
+ 	int index;
+ 	unsigned long flags;
+-
+-	skb= (struct sk_buff*) __raw_readl(desc->token);
+-	len = __raw_readl(&desc->hw_len);
+-	len &= 0x7ff;
+ 	
+ 	spin_lock_irqsave(&pool->lock, flags);
+ 	index = ((void*)desc - pool->pool_vir)/sizeof(struct cpdma_desc);
+@@ -121,6 +111,7 @@ void cpdma_free(struct newam335x_eth_priv *priv, struct cpdma_chan *chan, struct
+ 	spin_unlock_irqrestore(&pool->lock, flags);
+ }
+ 
++
+ int cpdma_eoi_write(struct newam335x_eth_priv *priv, int val)
+ {
+ 	__raw_writel(val, priv->dma_regs+ CPDMA_EIO_VECT);
+@@ -133,54 +124,64 @@ int cpdma_handle_chan(struct newam335x_eth_priv *priv, struct cpdma_chan *chan)
+ 	struct sk_buff *skb;
+ 	unsigned int status;
+ 	dma_addr_t addr;
+-	u32 len;
+-	addr = __raw_readl(chan->hdp);
++	u32 len, origlen;
++	int cnt = 0;
+ 
+ 	while (chan->head) {
+ 		desc = chan->head;
+ 		status = desc_read(desc, hw_mode);
+ 		if (status & CPDMA_DESC_OWNER) {
+-			return -ENXIO;
++			dev_dbg(priv->dev, "zz %s %d BUSY\n", __func__, __LINE__);
++			goto out;
+ 		} else {
+ 			skb = (struct sk_buff *) desc->token;
+ 			len = status & 0x7ff;
+ 
++			if (status & CPDMA_DESC_PASS_CRC)
++				len -= CPDMA_DESC_CRC_LEN;
++
++			status	= status & (CPDMA_DESC_EOQ | CPDMA_DESC_TD_COMPLETE |
++						CPDMA_DESC_PORT_MASK);
++
+ 			/*last desc*/
+ 			if (status & CPDMA_DESC_EOQ) {
+-				//printk("zz %s desc_data->head->prev:%08x desc_data->head->next:%08x \n",__func__, (int)desc_data->head.prev, (int)desc_data->head.next);
++				dev_dbg(priv->dev, "zz %s %d EOQ\n", __func__, __LINE__);
+ 				chan_write(chan, cp, descvir_to_phy(priv->pool, desc));
+ 				cpdma_eoi_write(priv, chan->eio_val);
+ 			}
+ 
++			addr = desc_read(desc, hw_buffer);
++			origlen = desc_read(desc, sw_len);
++			dma_unmap_single(priv->dev, addr, origlen, chan->dir);
+ 			chan->head = descphy_to_vir(priv->pool, desc->hw_next);
++
++			//newam335x_cpdma_dump(priv, desc);
+ 			cpdma_free(priv, chan, desc);
+ 			if (chan->handle)
+ 				chan->handle(priv, skb, len);
++			cnt++;
+ 		}
+ 	}
+-	return -EINVAL;
++out:
++	return cnt;
+ }
+ 
+-int cpdma_submit(struct newam335x_eth_priv *priv, struct sk_buff *skb, bool isTx)
++int cpdma_submit(struct newam335x_eth_priv *priv, struct cpdma_chan *chan, struct sk_buff *skb)
+ {
+ 	struct cpdma_desc *desc, *prev;
+-	struct cpdma_chan *chan;
++	unsigned long flags;
+ 	dma_addr_t dma_addr;
+ 	u32 mode, ret, len;
+ 
+-	desc= cpdma_alloc(priv, isTx);
++	spin_lock_irqsave(&priv->pool->lock, flags);
++	desc= cpdma_alloc(priv, chan);
+ 	if (!desc) {
+ 		printk("Error: no desc to alloc\n");
+ 		return -ENOMEM;
+ 	}
+ 
+-	if (isTx) {
+-		chan = &priv->tx_chan;
+-		dma_addr = dma_map_single(&priv->pdev->dev, skb->data, skb->len, DMA_TO_DEVICE);
+-	} else {
+-		dma_addr = dma_map_single(&priv->pdev->dev, skb->data, skb->len, DMA_FROM_DEVICE);
+-		chan = &priv->rx_chan;
+-	}
++	//dma_addr = dma_map_single(&priv->pdev->dev, skb->data, skb->len, chan->dir);
++	dma_addr = dma_map_single(&priv->pdev->dev, skb->data, skb->len, DMA_FROM_DEVICE);
+ 
+ 	ret = dma_mapping_error(&priv->pdev->dev, dma_addr);
+ 	if (ret)
+@@ -215,13 +216,18 @@ int cpdma_submit(struct newam335x_eth_priv *priv, struct sk_buff *skb, bool isTx
+ 	chan->tail = desc;
+ 
+ 	/* next check if EOQ has been triggered already */
+-	if (desc_read(prev, hw_mode) & CPDMA_DESC_EOQ)
++	mode = desc_read(prev, hw_mode);
++	if (((mode & (CPDMA_DESC_EOQ | CPDMA_DESC_OWNER)) == CPDMA_DESC_EOQ)) {
++		printk("zz %s %d eoq triger\n", __func__, __LINE__);
++		desc_write(prev, hw_mode, mode & ~CPDMA_DESC_EOQ);
+ 		chan_write(chan, hdp, descvir_to_phy(priv->pool, desc));
++	}
+ 
+ done:
+ 	if (chan->rxfree)
+ 		chan_write(chan, rxfree, 1);
+ 
++	spin_unlock_irqrestore(&priv->pool->lock, flags);
+ 	return 0;
+ }
+ 
+@@ -237,22 +243,20 @@ void cpdma_enable(struct newam335x_eth_priv *priv, bool enable)
+ 	//newam335x_cpdma_rx_state(priv);
+ }
+ 
+-void newam335x_cpdam_init(struct newam335x_eth_priv *priv, desc_handle_callback tx_handle, desc_handle_callback rx_handle)
++int newam335x_cpdam_init(struct newam335x_eth_priv *priv, desc_handle_callback tx_handle, desc_handle_callback rx_handle)
+ {
+ 	int ret, val;
+ 	unsigned long start;
+ 	int i;
+ 
+-	ret = newam335x_cpdma_pool_create(priv);
+-	if (ret) {
+-		dev_err(priv->dev, "pool create failed\n");
+-		return;
+-	}
+-
++	newam335x_cpdma_pool_create(priv);
+ 	priv->tx_chan.hdp       = priv->dma_regs + CPDMA_TXHDP_VER2;
+ 	priv->tx_chan.cp        = priv->dma_regs + CPDMA_TXCP_VER2;
+ 	priv->tx_chan.head = priv->tx_chan.tail = NULL;
+ 	priv->tx_chan.rxfree    = NULL;
++	priv->tx_chan.dir = DMA_TO_DEVICE;
++	priv->tx_chan.start_number =  priv->pool->number/2;
++	priv->tx_chan.end_number =  priv->pool->number;
+ 	priv->tx_chan.eio_val =  2;
+ 	priv->tx_chan.handle = tx_handle;
+ 
+@@ -260,6 +264,9 @@ void newam335x_cpdam_init(struct newam335x_eth_priv *priv, desc_handle_callback
+ 	priv->rx_chan.cp        = priv->dma_regs + CPDMA_RXCP_VER2;
+ 	priv->rx_chan.rxfree    = priv->dma_regs + CPDMA_RXFREE;
+ 	priv->rx_chan.head = priv->tx_chan.tail = NULL;
++	priv->rx_chan.dir = DMA_FROM_DEVICE;
++	priv->rx_chan.start_number =  0;
++	priv->rx_chan.end_number =  priv->pool->number/2;
+ 	priv->rx_chan.eio_val =  1;
+ 	priv->rx_chan.handle = rx_handle;
+ 
+@@ -272,7 +279,7 @@ void newam335x_cpdam_init(struct newam335x_eth_priv *priv, desc_handle_callback
+ 	do  {
+ 		if (time_after(jiffies, start)) {
+ 			printk("Error: reset cpdma failed");
+-			return;
++			return 1;
+ 		}
+ 		val = __raw_readl(priv->dma_regs + CPDMA_SOFTRESET);
+ 		msleep(1);
+@@ -286,7 +293,8 @@ void newam335x_cpdam_init(struct newam335x_eth_priv *priv, desc_handle_callback
+ 		__raw_writel(0, priv->dma_regs + CPDMA_TXCP_VER2 + 4*i);
+ 	}
+ 
+-	__raw_writel(0xff, priv->dma_regs + CPDMA_TX_CLR_MASK);
+-	__raw_writel(0xff, priv->dma_regs + CPDMA_RX_CLR_MASK);
++	__raw_writel(0x01, priv->dma_regs + CPDMA_TX_CLR_MASK);
++	__raw_writel(0x01, priv->dma_regs + CPDMA_RX_CLR_MASK);
++	return 0;
+ }
+ 
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.h b/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.h
+index 3c36d02..e06a4b8 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.h
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.h
+@@ -24,6 +24,10 @@
+ #define CPDMA_DESC_EOP		(1<<30)
+ #define CPDMA_DESC_OWNER	(1<<29)
+ #define CPDMA_DESC_EOQ		(1<<28)
++#define CPDMA_DESC_TD_COMPLETE	(1<<27)
++#define CPDMA_DESC_PASS_CRC	(1<<26)
++#define CPDMA_DESC_PORT_MASK	(7<<16)
++#define CPDMA_DESC_CRC_LEN	4
+ 
+ #define PKTBUFSRX 8
+ #define PKT_MIN			60
+@@ -40,9 +44,10 @@
+ 
+ #define DESC_PHYADDR(priv, DESC) (((void*)DESC-(void*)&priv->desc[0])+CPPI_RAM_BASE)
+ 
+-void newam335x_cpdam_init(struct newam335x_eth_priv *priv, desc_handle_callback tx_handle, desc_handle_callback rx_handle);
++int newam335x_cpdma_pool_create(struct newam335x_eth_priv *priv);
++int newam335x_cpdam_init(struct newam335x_eth_priv *priv, desc_handle_callback tx_handle, desc_handle_callback rx_handle);
+ int cpdma_handle_chan(struct newam335x_eth_priv *priv, struct cpdma_chan *chan);
+-int cpdma_submit(struct newam335x_eth_priv *priv, struct sk_buff *skb, bool isTx);
++int cpdma_submit(struct newam335x_eth_priv *priv, struct cpdma_chan *chan, struct sk_buff *skb);
+ void cpdma_enable(struct newam335x_eth_priv *priv, bool enable);
+ int cpdma_eoi_write(struct newam335x_eth_priv *priv, int val);
+ int handle_cpdma_desc(struct newam335x_eth_priv *priv, bool isTx);
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
+index 39d0981..e9cbe2c 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
+@@ -118,12 +118,15 @@ static void newam335x_slave_init(struct newam335x_eth_priv *priv, int port)
+ 	struct cpsw_sl_regs *slave;
+ 	struct cpsw_port1_regs *port_reg;
+ 
+-	if (port == 0) {
++	if (port == 1) {
+ 		slave = priv->sl1_regs;
+ 		port_reg = (struct cpsw_port1_regs *)priv->port1_regs;
+-	} else if (port == 1) {
++	} else if (port == 2) {
+ 		slave = priv->sl2_regs;
+ 		port_reg = priv->port2_regs;
++	} else {
++		dev_err(priv->dev, "error port not support\n");
++		return;
+ 	}
+ 	
+ 	setbit_and_wait_for_clear32(&slave->soft_reset);
+@@ -137,13 +140,9 @@ static void newam335x_slave_init(struct newam335x_eth_priv *priv, int port)
+ 	__raw_writel(mac_hi(priv->defaut_mac), &port_reg->sa_hi);
+ 	__raw_writel(mac_lo(priv->defaut_mac), &port_reg->sa_lo);
+ 
+-	/* enable forwarding */
+-	update_ale_port (priv, port+1, ALE_PORT_STATE_FORWARD);
+-
+-	cpsw_ale_add_mcast(priv, net_bcast_ethaddr, 1);
++	cpsw_ale_add_mcast(priv, net_bcast_ethaddr, 1<<port);
+ 
+-
+-	__raw_writel(1|1<<15|1<<5, &slave->mac_control);
++	//__raw_writel(1|1<<15|1<<5, &slave->mac_control);
+ }
+ 
+ /*
+@@ -164,43 +163,60 @@ static void newam335x_interrupt_init(struct newam335x_eth_priv *priv)
+ 
+ static int newam335x_eth_init(struct net_device *ndev)
+ {
+-	u32 val;
+ 	struct newam335x_eth_priv *priv = (struct newam335x_eth_priv *) netdev_priv(ndev);
++	u32 control_reg;
++	u32 val;
++	int ret;
+ 
+ 	printk("zz %s priv->ss_regs->soft_reset:%08x \n",__func__, (int)&priv->ss_regs->soft_reset);
+ 	setbit_and_wait_for_clear32(&priv->ss_regs->soft_reset);
+ 	printk("zz %s priv->ss_regs->soft_reset:%08x \n",__func__, (int)&priv->ss_regs->soft_reset);
+ 
+-	//writel(readl(&priv->ale_regs+CPSW_ALE_CONTROL) & ~(1<<2),
+-	//		priv->ale_regs+CPSW_ALE_CONTROL);  /* vlan unaware mode */
++	//enable ale
+ 	val = readl(priv->ale_regs+CPSW_ALE_CONTROL);
+ 	val |= 1<<31;
+ 	writel(val, priv->ale_regs+CPSW_ALE_CONTROL);
++	val = readl(priv->ale_regs+CPSW_ALE_CONTROL);
+ 	val |= 1<<30;
+ 	writel(val, priv->ale_regs+CPSW_ALE_CONTROL);
++	//enable ale vlan aware
++	val = readl(priv->ale_regs+CPSW_ALE_CONTROL);
++	val |= (1<<2);
++	writel(val, priv->ale_regs+CPSW_ALE_CONTROL);
++
++	//vlan aware
++	control_reg = readl(&priv->ss_regs->control);
++	control_reg |= CPSW_VLAN_AWARE;
++	writel(control_reg, &priv->ss_regs->control);
++	writel(0, &priv->port0_regs->tx_in_ctl);
+ 
+ 	/* setup host port priority mapping */
+ 	__raw_writel(0x76543210, &priv->port0_regs->cpdma_tx_pri_map);
+ 	__raw_writel(0, &priv->port0_regs->cpdma_rx_chan_map);
+ 
++	ale_init(priv, priv->defaut_mac);
++	newam335x_slave_init(priv, 1);
++	add_default_vlan(priv);
++
+ 	/* disable priority elevation and enable statistics on all ports */
+ 	__raw_writel(0, &priv->ss_regs->ptype);
+ 
+ 	/* enable statistics collection only on the host port */
+-	__raw_writel(1, &priv->ss_regs->stat_port_en);
+ 	__raw_writel(0x7, &priv->ss_regs->stat_port_en);
+-
++	/* Enable internal fifo flow control */
++	writel(0x7, &priv->ss_regs->flow_control);
+ 	update_ale_port(priv, 0, ALE_PORT_STATE_FORWARD);
+ 
+-	ale_init(priv, priv->defaut_mac);
+-
+-	newam335x_slave_init(priv, 0);
++	ret = newam335x_cpdam_init(priv, handle_tx_package, handle_rx_package);
++	if (ret)
++		return ret;
+ 
+-	newam335x_cpdam_init(priv, handle_tx_package, handle_rx_package);
++	queue_rx_packages(priv);
++	cpdma_enable(priv, true);
+ 
+ 	newam335x_interrupt_init(priv);
++	priv->mac_control = 0;
+ 
+-	queue_rx_packages(priv);
+ #if 0
+ 	newam335x_phy_init(dev);
+ 	phy_startup(priv->phydev);
+@@ -214,14 +230,36 @@ static void eth_adjust_link(struct net_device *ndev)
+ {
+ 	struct newam335x_eth_priv *priv = (struct newam335x_eth_priv *) netdev_priv(ndev);
+ 	struct phy_device *phydev = priv->phydev;
++	u32			mac_control = 0;
+ 
+-	//printk("zz %s %d link:%d\n", __func__, __LINE__, phydev->link);
+ 
+ 	if (phydev->link) {
++		update_ale_port(priv, 1, ALE_PORT_STATE_FORWARD);
++		if (phydev->speed == 1000)
++			mac_control |= BIT(7);	/* GIGABITEN	*/
++		if (phydev->duplex)
++			mac_control |= BIT(0);	/* FULLDUPLEXEN	*/
++
++		/* set speed_in input in case RMII mode is used in 100Mbps */
++		if (phydev->speed == 100)
++			mac_control |= BIT(15);
++		else if (phydev->speed == 10)
++			mac_control |= BIT(18); /* In Band mode */
++
++		mac_control |= 0x20;
++		if (priv->mac_control != mac_control)
++			__raw_writel(mac_control|0x20, &priv->sl1_regs->mac_control);
++
+ 		netif_carrier_on(ndev);
+-		cpdma_enable(priv, true);
++		if (netif_running(ndev))
++			netif_wake_queue(ndev);
+ 	} else {
+-		//cpdma_enable(priv, false);
++		mac_control = 0;
++		__raw_writel(mac_control, &priv->sl1_regs->mac_control);
++	}
++	if (priv->mac_control != mac_control) {
++		dev_info(priv->dev, "link is %s\n", phydev->link?"up":"down");
++		priv->mac_control = mac_control;
+ 	}
+ }
+ 
+@@ -230,10 +268,15 @@ static int cpsw_ndo_open(struct net_device *ndev)
+ 	struct newam335x_eth_priv *priv = (struct newam335x_eth_priv *) netdev_priv(ndev);
+ 	struct phy_device *phydev;
+ 	char phy_id[MII_BUS_ID_SIZE + 3];
++	int ret;
+ 
+ 	pm_runtime_get_sync(&priv->pdev->dev);
+ 
+-	newam335x_eth_init(ndev);
++	ret = newam335x_eth_init(ndev);
++	if (ret) {
++		dev_err(priv->dev, "eth init failed\n");
++		return -ENXIO;
++	}
+ 
+ 	snprintf(phy_id, sizeof(phy_id), PHY_ID_FMT,
+ 		 "newam335x_mdio", 0);
+@@ -249,11 +292,14 @@ static int cpsw_ndo_open(struct net_device *ndev)
+ 		return 1;
+ 	}
+ 
++	napi_enable(&priv->napi_rx);
+ 	netif_carrier_off(ndev);
+ 	ndev->phydev = phydev;
+ 	priv->phydev = phydev;
+ 	phy_start(ndev->phydev);
+ 
++	//en rx/tx for all mode
++	__raw_writel(0x20, &priv->sl1_regs->mac_control);
+ 	return 0;
+ }
+ 
+@@ -271,7 +317,7 @@ static int cpsw_ndo_start_xmit (struct sk_buff *skb,
+ 
+ 	skb_tx_timestamp(skb);
+ 	printk("zz %s %d \n", __func__, __LINE__);
+-	cpdma_submit(priv, skb, 1);
++	cpdma_submit(priv, &priv->tx_chan, skb);
+     return NETDEV_TX_OK;
+ }
+ 
+@@ -342,7 +388,7 @@ int queue_rx_packages(struct newam335x_eth_priv *priv)
+ 		}
+ 
+ 		skb->len = CPSW_MAX_PACKET_SIZE;
+-		ret = cpdma_submit(priv, skb, 0);
++		ret = cpdma_submit(priv, &priv->rx_chan, skb);
+ 
+ 		if (ret) {
+ 			dev_kfree_skb_any(skb);
+@@ -357,12 +403,19 @@ int queue_rx_packages(struct newam335x_eth_priv *priv)
+ static int eth_rx_poll(struct napi_struct *napi_rx, int budget)
+ {
+ 	struct newam335x_eth_priv *priv;
+-	//printk("zz %s %d \n", __func__, __LINE__);
++	int cnt;
+ 	priv = netdev_priv(napi_rx->dev);
+-	//handle_rx_package(priv);
+-	enable_irq(priv->rx_irq);
+-	//printk("zz %s %d \n", __func__, __LINE__);
+-	return 0;
++
++	cnt = cpdma_handle_chan(priv, &priv->rx_chan);
++	if (cnt<budget) {
++		//printk("zz %s %d rx napi complete\n", __func__, __LINE__);
++		napi_complete(napi_rx);
++		writel(0xff, &priv->wr_regs->rx_en);
++		enable_irq(priv->rx_irq);
++		return cnt;
++	}
++
++	return cnt;
+ }
+ 
+ static int eth_tx_poll(struct napi_struct *napi_tx, int budget)
+@@ -394,28 +447,42 @@ static irqreturn_t tx_intr(int __always_unused irq, void *data)
+ static int handle_rx_package(struct newam335x_eth_priv *priv, struct sk_buff *skb, int len)
+ {
+ 	struct net_device *ndev;
++	struct sk_buff		*new_skb;
++	int			ret = 0;
+ 
+ 	ndev = priv->ndev;
+ 
+-	//dump_skb(skb);
++	//dump_skb(skb, len);
+ 			
+-	skb_put(skb, len);
+-	skb->protocol = eth_type_trans(skb, ndev);
+-	netif_receive_skb(skb);
+-	ndev->stats.rx_bytes += len;
+-	ndev->stats.rx_packets++;
++	new_skb = netdev_alloc_skb_ip_align(ndev, CPSW_MAX_PACKET_SIZE);
++	if (new_skb) {
++		skb_put(skb, len);
++		skb->protocol = eth_type_trans(skb, ndev);
++		//printk("zz %s skb->protocol:%08x len:%08x \n",__func__, (int)skb->protocol, (int)len);
++		netif_receive_skb(skb);
++		ndev->stats.rx_bytes += len;
++		ndev->stats.rx_packets++;
++	} else {
++		ndev->stats.rx_dropped++;
++		new_skb = skb;
++	}
+ 
++requeue:
++	new_skb->len = CPSW_MAX_PACKET_SIZE;
++	ret = cpdma_submit(priv, &priv->rx_chan, new_skb);
++	if (ret) {
++		dev_err(priv->dev, "submit error\n");
++	}
+ 	return 0;
+ }
+ 
+ static irqreturn_t rx_intr(int __always_unused irq, void *data)
+ {
+ 	struct newam335x_eth_priv *priv= data;
+-	//__napi_schedule(&priv->napi_rx); it is halt in irq context
+-	//__napi_schedule_irqoff(&priv->napi_rx);
+-	//disable_irq_nosync(irq);
+-	//handle_rx_package(priv);
+-	cpdma_handle_chan(priv, &priv->rx_chan);
++
++	napi_schedule(&priv->napi_rx);
++	disable_irq_nosync(priv->rx_irq);
++
+ 	return IRQ_HANDLED;
+ }
+ 
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
+index 570dfdd..849af20 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
+@@ -10,12 +10,20 @@ struct cpsw_ss_regs {
+ 	u32	soft_reset;
+ 	u32	stat_port_en;
+ 	u32	ptype;
++	u32	soft_idle;
++	u32	thru_rate;
++	u32	gap_thresh;
++	u32	tx_start_wds;
++	u32	flow_control;
++	u32	vlan_ltype;
++	u32	ts_ltype;
++	u32	dlr_ltype;
+ };
+ 
+ struct cpsw_port1_regs {
+ 	u32	max_blks;
+ 	u32	blk_cnt;
+-	u32	flow_thresh;
++	u32	ftx_in_ctl;
+ 	u32	port_vlan;
+ 	u32	tx_pri_map;
+ 	u32	gap_thresh;
+@@ -26,7 +34,7 @@ struct cpsw_port1_regs {
+ struct cpsw_port0_regs {
+ 	u32	max_blks;
+ 	u32	blk_cnt;
+-	u32	flow_thresh;
++	u32	tx_in_ctl;
+ 	u32	port_vlan;
+ 	u32	tx_pri_map;
+ 	u32	cpdma_tx_pri_map;
+@@ -64,6 +72,9 @@ struct cpdma_chan {
+ 	struct cpdma_desc *head, *tail;
+ 	void *hdp, *cp, *rxfree;
+ 	int eio_val; //tx 2, rx 1
++	int start_number;
++	int end_number;
++	enum dma_data_direction	dir;
+ };
+ 
+ struct cpsw_wr_regs {
+@@ -133,6 +144,7 @@ struct cpdma_desc_pool {
+ };
+ 
+ #define RX_PACKAGE_NUM (64)
++//#define RX_PACKAGE_NUM (1)
+ struct newam335x_eth_priv {
+ 	struct platform_device *pdev;
+ 	struct device *dev;
+@@ -140,6 +152,7 @@ struct newam335x_eth_priv {
+ 	struct phy_device *phydev;
+ 	int phyaddr;
+ 	int phytype;
++	int mac_control;
+ 	struct napi_struct napi_tx;
+ 	struct napi_struct napi_rx;
+ 	struct cpsw_ss_regs *ss_regs;
+@@ -196,6 +209,8 @@ struct newam335x_eth_priv {
+ #define CPSW_ALE_PORTCTL4  0x50
+ /*ADDRESS LOOKUP ENGINE PORT 5 CONTROL*/
+ #define CPSW_ALE_PORTCTL5  0x54
++#define CPSW_ALE_VLAN_AWARE	1
++#define CPSW_VLAN_AWARE		(1<<1)
+ 
+ 
+ 
+diff --git a/drivers/net/ethernet/newam335x/newam335x_mdio.c b/drivers/net/ethernet/newam335x/newam335x_mdio.c
+index 50108ac..e148b72 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_mdio.c
++++ b/drivers/net/ethernet/newam335x/newam335x_mdio.c
+@@ -110,7 +110,7 @@ static int newam335x_mdio_read(struct mii_bus *bus, int phy_id, int phy_reg)
+ 	val = __raw_readl(&mdio_regs->user[0].access);
+ 	val = (val & MDIO_ACK) ? (val & MDIO_DATA) : -EIO;
+ 
+-	dev_dbg(priv->dev, "read phy_id:%08x phy_reg:%08x val:%08x \n",phy_id, phy_reg, val);
++	//dev_dbg(priv->dev, "read phy_id:%08x phy_reg:%08x val:%08x \n",phy_id, phy_reg, val);
+ 	return val;
+ }
+ 
+@@ -134,7 +134,7 @@ static int newam335x_mdio_write(struct mii_bus *bus, int phy_id, int phy_reg, u1
+ 	if (ret)
+ 		return -EINVAL;
+ 	
+-	dev_dbg(priv->dev, "write phy_id:%08x phy_reg:%08x val:%08x \n",phy_id, phy_reg, val);
++	//dev_dbg(priv->dev, "write phy_id:%08x phy_reg:%08x val:%08x \n",phy_id, phy_reg, val);
+ 	return 0;
+ }
+ 
+-- 
+1.9.1
+

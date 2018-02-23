@@ -1,0 +1,296 @@
+diff --git a/init/main.c b/init/main.c
+index 2858be7..dafd2e4 100644
+--- a/init/main.c
++++ b/init/main.c
+@@ -81,6 +81,7 @@
+ #include <linux/integrity.h>
+ #include <linux/proc_ns.h>
+ #include <linux/io.h>
++#include <linux/testme.h>
+ 
+ #include <asm/io.h>
+ #include <asm/bugs.h>
+@@ -476,19 +477,275 @@ static void __init mm_init(void)
+ 	ioremap_huge_init();
+ }
+ 
+-asmlinkage __visible void __init start_kernel(void)
++void put_char_sh(char ch)
+ {
+-	char *command_line;
+-	char *after_dashes;
++	#define SCIF_TDFE   BIT(5)  /* Transmit FIFO Data Empty */
++	#define SCIF_TEND   BIT(6)  /* Transmission End */
++
++	void __iomem *tx_addr;
++	void __iomem *st_addr;
++	unsigned int status;
++	tx_addr = 0xe6e8800c;
++	st_addr = 0xe6e88010;
++	int size = 0;
++
++#if 0
++	do {
++		status = readw(st_addr);
++	} while (!(status & SCIF_TDFE));
++#endif
++
++	printk("zz %s state 0:%08x \n",__func__, status);
++	iowrite16(0x3132, tx_addr);
++	//__flush_dcache_area(0xe6e88000, 0x200);
++	iowrite16(0x3334, tx_addr);
++	//__flush_dcache_area(0xe6e88000, 0x200);
++	iowrite16(0x3536, tx_addr);
++	//__flush_dcache_area(0xe6e88000, 0x200);
+ 
+-	set_task_stack_end_magic(&init_task);
+-	smp_setup_processor_id();
+-	debug_objects_early_init();
++	//writew((~(SCIF_TDFE))&(~SCIF_TDFE) ,st_addr);
+ 
++	status = readw(st_addr);
++	//status &=~(SCIF_TDFE | SCIF_TEND);
++	//writew(status, st_addr);
++	printk("zz %s state 1:%08x \n",__func__, status);
++}
++
++static void test_uart(void)
++{
++#if 0
++	int size = 0;
++	void __iomem *ebda_map;
++	void __iomem *addr;
++	addr = 0xe6e8800c;
++	while(size < 3) {
++		//*p='a';
++		//writew(0x3133, (volatile void *)0xe6e8800c);
++		writew(0x3333, addr);
++		size++;
++	}
++#endif
++	put_char_sh('a');
++	//put_char_sh('b');
++}
++
++#include <asm/pgtable.h>
++#include <asm/kernel-pgtable.h>
++void show_pagetable(size_t address)
++{
+ 	/*
+-	 * Set up the the initial canary ASAP:
++	 * idmap_pg_dir 		0xffff000049194000
++	 * PGDIR_SHIFT: 		0x27 ==> 49
++	 * PTRS_PER_PGD:        0x200
++	 * SWAPPER_TABLE_SHIFT: 0x1e
++	 * PTRS_PER_PTE: 		0x200
++	 * PMD_TYPE_TABLE: 		0x3
++	 * SWAPPER_BLOCK_SHIFT: 0x15
++	 * swapper_pg_dir: 		0x49197000
++	 * KIMAGE_VADDR + TEXT_OFFSET: 08080000
+ 	 */
+-	boot_init_stack_canary();
++	size_t idmap_address = (size_t)idmap_pg_dir;
++	size_t page_v1 = idmap_address;
++	size_t page_v2 = idmap_address+PAGE_SIZE;
++	size_t page_v3 = idmap_address+PAGE_SIZE*2;
++
++	size_t swapper_address = (size_t)swapper_pg_dir;
++	size_t swaper_page_v1 = swapper_address;
++	size_t swaper_page_v2 = swapper_address+PAGE_SIZE;
++	size_t swaper_page_v3 = swapper_address+PAGE_SIZE*2;
++	void __iomem *addr;
++
++	u32 *p;
++	int i, start;
++	size_t val, *p64, testv;
++
++	printk("zz %s idmap_pg_dir:%lx \n",__func__, idmap_address);
++	//printk("zz %s __idmap_text_start:%lx \n",__func__, *((size_t*)__idmap_text_start));
++	//printk("zz %s __idmap_text_end:%lx \n",__func__,* ((size_t*)__idmap_text_end));
++	printk("zz %s PGDIR_SHIFT:%08x \n",__func__, PGDIR_SHIFT);
++	printk("zz %s PTRS_PER_PGD:%08x \n",__func__, PTRS_PER_PGD);
++	printk("zz %s SWAPPER_TABLE_SHIFT:%08x \n",__func__, SWAPPER_TABLE_SHIFT);
++	printk("zz %s PTRS_PER_PTE:%08x \n",__func__, PTRS_PER_PTE);
++	printk("zz %s PAGE_SIZE:%lx \n",__func__, PAGE_SIZE);
++	printk("zz %s PMD_TYPE_TABLE:%llx \n",__func__, PMD_TYPE_TABLE);
++	printk("zz %s SWAPPER_BLOCK_SHIFT:%08x \n",__func__, SWAPPER_BLOCK_SHIFT);
++
++	printk("page_v1:%lx\n", page_v1);
++	printk("page_v2:%lx\n", page_v2);
++	printk("page_v3:%lx\n", page_v3);
++
++	printk("swaper_page_v1:%lx\n", swaper_page_v1);
++	printk("swaper_page_v2:%lx\n", swaper_page_v2);
++	printk("swaper_page_v3:%lx\n", swaper_page_v3);
++
++	/*dump the address in page table*/
++	//testv = 0x48946000;
++	testv = 0xe6e8800c;
++	testv = address;
++	val = testv;
++	val = val>>PGDIR_SHIFT;
++	val &= (PTRS_PER_PGD -1);
++	p64 =(size_t*)page_v1;
++	p64 += val;
++	printk("page_v1: %lx address v1:%lx\n", *p64, val);
++
++	val = (size_t)testv;
++	val = val>>(SWAPPER_TABLE_SHIFT);
++	val &= (PTRS_PER_PTE -1);
++	p64=(size_t *)page_v2;
++	p64 += val;
++	printk("page_v2: %lx address v2:%lx\n", *p64, val);
++
++	val = (size_t)testv;
++	val = val>>(SWAPPER_BLOCK_SHIFT);
++	val &= (PTRS_PER_PTE -1);
++	p64=(size_t *)page_v3;
++	p64 += val;
++	printk("page_v3: %lx address v3:%lx\n", *p64, val);
++
++	testv = 0x9194000;
++	testv = 0xe6e8800c;
++	testv = address;
++	val = testv;
++	val = val>>PGDIR_SHIFT;
++	val &= (PTRS_PER_PGD -1);
++	p64 =(size_t*)swaper_page_v1;
++	p64 += val;
++	printk("swaper_page_v1: %lx address v1:%lx\n", *p64, val);
++
++	val=(*p64);
++	val &= ~0xf0000003;
++	p64=(size_t)val;
++	printk("try to read the page v2: %08x\n", p64);
++	printk("read pagev2: %lx address \n", *p64);
++	val = (size_t)testv;
++	val = val>>(SWAPPER_TABLE_SHIFT);
++	val &= (PTRS_PER_PTE -1);
++	p64=(size_t *)swaper_page_v2;
++	p64 += val;
++	printk("swaper_page_v2: %lx address v2:%lx\n", *p64, val);
++
++	val = (size_t)testv;
++	val = val>>(SWAPPER_BLOCK_SHIFT);
++	val &= (PTRS_PER_PTE -1);
++	p64=(size_t *)swaper_page_v3;
++	p64 += val;
++	printk("swaper_page_v3: %lx address v3:%lx\n", *p64, val);
++
++	//printk("zz %s as:%llx \n",__func__, as);
++}
++EXPORT_SYMBOL(show_pagetable);
++
++void dump_ptg(void)
++{
++	/*
++	 * idmap_pg_dir 		0xffff000049194000
++	 * PGDIR_SHIFT: 		0x27 ==> 49
++	 * PTRS_PER_PGD:        0x200
++	 * SWAPPER_TABLE_SHIFT: 0x1e
++	 * PTRS_PER_PTE: 		0x200
++	 * PMD_TYPE_TABLE: 		0x3
++	 * SWAPPER_BLOCK_SHIFT: 0x15
++	 * swapper_pg_dir: 		0x49197000
++	 * KIMAGE_VADDR + TEXT_OFFSET: 08080000
++	 */
++	size_t idmap_address = (size_t)idmap_pg_dir;
++	size_t page_v1 = idmap_address;
++	size_t page_v2 = idmap_address+PAGE_SIZE;
++	size_t page_v3 = idmap_address+PAGE_SIZE*2;
++
++	size_t swapper_address = (size_t)swapper_pg_dir;
++	size_t swaper_page_v1 = swapper_address;
++	size_t swaper_page_v2 = swapper_address+PAGE_SIZE;
++	size_t swaper_page_v3 = swapper_address+PAGE_SIZE*2;
++
++	u32 *p;
++	int i, start;
++	size_t val, *p64, testv;
++
++	printk("zz %s idmap_pg_dir:%lx \n",__func__, idmap_address);
++	//printk("zz %s __idmap_text_start:%lx \n",__func__, *((size_t*)__idmap_text_start));
++	//printk("zz %s __idmap_text_end:%lx \n",__func__,* ((size_t*)__idmap_text_end));
++	printk("zz %s PGDIR_SHIFT:%08x \n",__func__, PGDIR_SHIFT);
++	printk("zz %s PTRS_PER_PGD:%08x \n",__func__, PTRS_PER_PGD);
++	printk("zz %s SWAPPER_TABLE_SHIFT:%08x \n",__func__, SWAPPER_TABLE_SHIFT);
++	printk("zz %s PTRS_PER_PTE:%08x \n",__func__, PTRS_PER_PTE);
++	printk("zz %s PAGE_SIZE:%lx \n",__func__, PAGE_SIZE);
++	printk("zz %s PMD_TYPE_TABLE:%llx \n",__func__, PMD_TYPE_TABLE);
++	printk("zz %s SWAPPER_BLOCK_SHIFT:%08x \n",__func__, SWAPPER_BLOCK_SHIFT);
++
++	printk("page_v1:%lx\n", page_v1);
++	printk("page_v2:%lx\n", page_v2);
++	printk("page_v3:%lx\n", page_v3);
++
++	printk("swaper_page_v1:%lx\n", swaper_page_v1);
++	printk("swaper_page_v2:%lx\n", swaper_page_v2);
++	printk("swaper_page_v3:%lx\n", swaper_page_v3);
++
++	/*dump the address in page table*/
++	//testv = 0x48946000;
++	testv = 0xe6e8800c;
++	val = testv;
++	val = val>>PGDIR_SHIFT;
++	val &= (PTRS_PER_PGD -1);
++	p64 =(size_t*)page_v1;
++	p64 += val;
++	printk("page_v1: %lx address v1:%lx\n", *p64, val);
++
++	val = (size_t)testv;
++	val = val>>(SWAPPER_TABLE_SHIFT);
++	val &= (PTRS_PER_PTE -1);
++	p64=(size_t *)page_v2;
++	p64 += val;
++	printk("page_v2: %lx address v2:%lx\n", *p64, val);
++
++	val = (size_t)testv;
++	val = val>>(SWAPPER_BLOCK_SHIFT);
++	val &= (PTRS_PER_PTE -1);
++	p64=(size_t *)page_v3;
++	p64 += val;
++	printk("page_v3: %lx address v3:%lx\n", *p64, val);
++
++	testv = 0x9194000;
++	testv = 0xe6e8800c;
++	val = testv;
++	val = val>>PGDIR_SHIFT;
++	val &= (PTRS_PER_PGD -1);
++	p64 =(size_t*)swaper_page_v1;
++	p64 += val;
++	printk("swaper_page_v1: %lx address v1:%lx\n", *p64, val);
++
++	val = (size_t)testv;
++	//val = val>>(SWAPPER_TABLE_SHIFT);
++	val = val>>(SWAPPER_TABLE_SHIFT);
++	val &= (PTRS_PER_PTE -1);
++	p64=(size_t *)swaper_page_v2;
++	p64 += val;
++	printk("swaper_page_v2: %lx address v2:%lx\n", *p64, val);
++
++	val = (size_t)testv;
++	val = val>>(SWAPPER_BLOCK_SHIFT);
++	val &= (PTRS_PER_PTE -1);
++	p64=(size_t *)swaper_page_v3;
++	p64 += val;
++	printk("swaper_page_v3: %lx address v3:%lx\n", *p64, val);
++
++	//printk("zz %s as:%llx \n",__func__, as);
++}
++
++struct mm_struct * get_init_mem(void)
++{
++	return &init_mm;
++}
++EXPORT_SYMBOL_GPL(get_init_mem);
++
++asmlinkage __visible void __init start_kernel(void)
++{
++	char *command_line;
++	char *after_dashes;
++
++	test_uart();
++	dump_ptg();
+ 
+ 	cgroup_init_early();
+ 
