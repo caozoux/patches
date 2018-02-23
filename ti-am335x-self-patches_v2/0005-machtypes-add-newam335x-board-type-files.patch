@@ -1,0 +1,24 @@
+From 9b8573557420377d3c368ca28b7e18bc5a7ffc9f Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Fri, 4 Aug 2017 13:46:32 +0800
+Subject: [PATCH 05/34] machtypes:add newam335x board type files
+
+---
+ arch/arm/tools/mach-types | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/arch/arm/tools/mach-types b/arch/arm/tools/mach-types
+index 2ed1b8a..1ca40b6 100644
+--- a/arch/arm/tools/mach-types
++++ b/arch/arm/tools/mach-types
+@@ -576,6 +576,7 @@ arielsaarc		MACH_ARIELSAARC		ARIELSAARC		4113
+ arieldkb		MACH_ARIELDKB		ARIELDKB		4114
+ armadillo810		MACH_ARMADILLO810	ARMADILLO810		4115
+ tam335x			MACH_TAM335X		TAM335X			4116
++newam335x		MACH_NEWAM335X		NEWAM335X		3589
+ grouper			MACH_GROUPER		GROUPER			4117
+ mpcsa21_9g20		MACH_MPCSA21_9G20	MPCSA21_9G20		4118
+ m6u_cpu			MACH_M6U_CPU		M6U_CPU			4119
+-- 
+1.9.1
+

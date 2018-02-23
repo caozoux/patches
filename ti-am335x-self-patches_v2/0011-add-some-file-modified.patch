@@ -1,0 +1,53 @@
+From 841fe16147fefe5ae1e057154509c0b76fa0bafa Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Mon, 14 Aug 2017 15:05:30 +0800
+Subject: [PATCH 11/34] add some file modified
+
+---
+ arch/arm/configs/newam335x_defconfig |  1 +
+ arch/arm/mach-newam335x/Makefile     |  2 +-
+ arch/arm/mach-newam335x/plat.h       | 10 +++++++---
+ 3 files changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/arch/arm/configs/newam335x_defconfig b/arch/arm/configs/newam335x_defconfig
+index f0ecd22..8042e4c 100644
+--- a/arch/arm/configs/newam335x_defconfig
++++ b/arch/arm/configs/newam335x_defconfig
+@@ -5,5 +5,6 @@ CONFIG_EXPERT=y
+ CONFIG_ARCH_NEWAM335X=y
+ CONFIG_DEBUG_NEWAM335X_UART1=y
+ CONFIG_DEBUG_LL=y
++CONFIG_GENERIC_IRQ_CHIP=y
+ #CONFIG_GENERIC_UART1=Y
+ #DEBUG_AM33XXUART1=y
+diff --git a/arch/arm/mach-newam335x/Makefile b/arch/arm/mach-newam335x/Makefile
+index f7211a2..4acc206 100644
+--- a/arch/arm/mach-newam335x/Makefile
++++ b/arch/arm/mach-newam335x/Makefile
+@@ -2,4 +2,4 @@
+ #ccflags-$(CONFIG_ARCH_MULTIPLATFORM) := -I$(srctree)/$(src)/include \
+ 	-I$(srctree)/arch/arm/plat-omap/include
+ 
+-obj-y := board.o interrupt.o
++obj-y := board.o interrupt.o  timer.o clk.o
+diff --git a/arch/arm/mach-newam335x/plat.h b/arch/arm/mach-newam335x/plat.h
+index dc60731..ce59ae5 100644
+--- a/arch/arm/mach-newam335x/plat.h
++++ b/arch/arm/mach-newam335x/plat.h
+@@ -1,6 +1,10 @@
+ #ifndef _PLAT_H_
+ #define _PLAT_H_
+-void __init omap_init_irq(u32 base, int nr_irqs);
+-
+-
++void omap_init_irq(u32 base, int nr_irqs);
++void newam335x_intc_handle_irq(struct pt_regs *regs);
++void newam335x_timer_init(void);
++void newam335x_clk_init(void);
++void g_timer_dump(void);
++void test_irq(void);
++extern struct irq_domain *domain;
+ #endif
+-- 
+1.9.1
+

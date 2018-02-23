@@ -1,0 +1,34 @@
+From 89b24852cec3d35356ceecee99fff8f1b85ed2d4 Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Mon, 14 Aug 2017 14:54:05 +0800
+Subject: [PATCH 09/34] newam335x: interrupt: error bank->nr_irqs size
+
+---
+ arch/arm/mach-newam335x/interrupt.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm/mach-newam335x/interrupt.c b/arch/arm/mach-newam335x/interrupt.c
+index 0db1d41..a626895 100644
+--- a/arch/arm/mach-newam335x/interrupt.c
++++ b/arch/arm/mach-newam335x/interrupt.c
+@@ -162,7 +162,7 @@ void __init omap_init_irq(u32 base, int nr_irqs)
+ 
+ 	base_reg = ioremap(base, SZ_4K);
+ 
+-	if (base_reg) {
++	if (!base_reg) {
+ 		early_print("irq chip map error\n");
+ 		return;
+ 	}
+@@ -176,7 +176,7 @@ void __init omap_init_irq(u32 base, int nr_irqs)
+ 	for (i = 0; i < ARRAY_SIZE(irq_banks); ++i) {
+ 		struct gen_irq_bank *bank = irq_banks + i;
+ 		bank->base_reg = base_reg;
+-		for (j = 0;  j< bank->nr_irqs; j++) {
++		for (j = 0;  j< bank->nr_irqs; j += 32) {
+ 			gen_alloc_gc(bank->base_reg + j, j + irq_base, 32);
+ 		}
+ 	}
+-- 
+1.9.1
+

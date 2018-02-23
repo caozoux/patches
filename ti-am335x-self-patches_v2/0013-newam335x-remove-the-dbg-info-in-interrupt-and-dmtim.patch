@@ -1,0 +1,65 @@
+From bb72c428bf52661431a6663f9c27166a2400631b Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Mon, 14 Aug 2017 15:59:07 +0800
+Subject: [PATCH 13/34] newam335x: remove the dbg info in interrupt and
+ dmtimer0 inetrrupt
+
+---
+ arch/arm/mach-newam335x/interrupt.c | 1 -
+ arch/arm/mach-newam335x/plat.h      | 2 ++
+ arch/arm/mach-newam335x/timer.c     | 6 +++++-
+ 3 files changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm/mach-newam335x/interrupt.c b/arch/arm/mach-newam335x/interrupt.c
+index a626895..a678aa7 100644
+--- a/arch/arm/mach-newam335x/interrupt.c
++++ b/arch/arm/mach-newam335x/interrupt.c
+@@ -222,7 +222,6 @@ void newam335x_intc_handle_irq(struct pt_regs *regs)
+ 
+ 		irqnr = readl_relaxed(base_addr + INTCPS_SIR_IRQ_OFFSET);
+ 		irqnr &= ACTIVEIRQ_MASK;
+-		early_print("IRQ :%d \n", irqnr);
+ 		if (irqnr) {
+ 			irqnr = irq_find_mapping(domain, irqnr);
+ 			handle_IRQ(irqnr, regs);
+diff --git a/arch/arm/mach-newam335x/plat.h b/arch/arm/mach-newam335x/plat.h
+index ce59ae5..9b9ff34 100644
+--- a/arch/arm/mach-newam335x/plat.h
++++ b/arch/arm/mach-newam335x/plat.h
+@@ -6,5 +6,7 @@
+ void newam335x_clk_init(void);
+ void g_timer_dump(void);
+ void test_irq(void);
++void __init board_newam335x_init(void);
++
+ extern struct irq_domain *domain;
+ #endif
+diff --git a/arch/arm/mach-newam335x/timer.c b/arch/arm/mach-newam335x/timer.c
+index 3e13cde..1fa83c4 100644
+--- a/arch/arm/mach-newam335x/timer.c
++++ b/arch/arm/mach-newam335x/timer.c
+@@ -93,7 +93,6 @@ static irqreturn_t omap2_gp_timer_interrupt(int irq, void *dev_id)
+ 	u32 reg;
+ 	struct clock_event_device *evt = &clockevent_newam335x;
+ 	reg = __raw_readl(dmt_base_reg +IRQSTATUS);
+-	early_print("%s %08x\n", __func__, reg);
+ 	evt->event_handler(evt);
+ 	__raw_writel(reg, dmt_base_reg+IRQSTATUS);
+ 	return IRQ_HANDLED;
+@@ -162,8 +161,13 @@ static void __init low_newam335x_timer_init(void __iomem *base)
+ 	 * Set auto-reload and current-count values.  This timer hardware counts
+ 	 * up from the initial/reload value and interrupts on the zero rollover.
+ 	 */
++#if 0
+ 	__raw_writel(0xFFFFFFFF - 0x8000, base+TLDR);
+ 	__raw_writel(0xFFFFFFFF - 0x8000, base+TCRR);
++#else
++	__raw_writel(0xFFFFFFFF - 0x200, base+TLDR);
++	__raw_writel(0xFFFFFFFF - 0x200, base+TCRR);
++#endif
+ 
+ 	/* Enable overflow interrupt, and start the timer. */
+ 	__raw_writel(DMT_IRQ_OVF, base+IRQENABLE_SET);
+-- 
+1.9.1
+

@@ -1,0 +1,124 @@
+From 191fb3e5742e82c0b4ba64cf91efa523247570eb Mon Sep 17 00:00:00 2001
+From: zou cao <cao.zou@windriver.com>
+Date: Fri, 1 Sep 2017 15:35:35 +0800
+Subject: [PATCH 28/34] newam335x: add time0 shecl_clock as shecl_cock
+
+sched_clock_register to register sched clock
+
+Signed-off-by: zou cao <cao.zou@windriver.com>
+---
+ arch/arm/mach-newam335x/clk.c   |  8 ++++++++
+ arch/arm/mach-newam335x/timer.c | 45 ++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 52 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/mach-newam335x/clk.c b/arch/arm/mach-newam335x/clk.c
+index 3f5cdc2..89758b4 100644
+--- a/arch/arm/mach-newam335x/clk.c
++++ b/arch/arm/mach-newam335x/clk.c
+@@ -55,4 +55,12 @@ void newam335x_clk_init(void)
+ 						   25000000);
+ 	clk_hw_register_clkdev(hw, NULL, "dmtimer2");
+ 
++	hw  = clk_hw_register_fixed_rate(NULL, "dmtimer3", NULL, 0,
++						   25000000);
++	clk_hw_register_clkdev(hw, NULL, "dmtimer3");
++
++	hw  = clk_hw_register_fixed_rate(NULL, "dmtimer0", NULL, 0,
++						   32768);
++	clk_hw_register_clkdev(hw, NULL, "dmtimer0");
++
+ }
+diff --git a/arch/arm/mach-newam335x/timer.c b/arch/arm/mach-newam335x/timer.c
+index 1aa8ead..41b78ba 100644
+--- a/arch/arm/mach-newam335x/timer.c
++++ b/arch/arm/mach-newam335x/timer.c
+@@ -17,13 +17,14 @@
+ #include <linux/clkdev.h>
+ #include <linux/clk.h>
+ #include <linux/sh_clk.h>
++#include <linux/sched_clock.h>
+ #include "plat.h"
+ #include "clk.h"
+ 
+-static irqreturn_t omap2_gp_timer_interrupt(int irq, void *dev_id);
+ 
+ #define DMTIMER0_REG_BASE 0x44E05000
+ #define DMTIMER2_REG_BASE 0x48040000
++#define DMTIMER3_REG_BASE 0x48044000
+ 
+ #define TIDR 0x0
+ #define TIOCP_CFG  0x10
+@@ -65,10 +66,17 @@
+ #define	  DMT_TCLR_CAP_MODE_2ND	  (1 << 13)	/* Capture second event mode */
+ #define	  DMT_TCLR_GPO_CFG	  (1 << 14)	/* (no descr in datasheet) */
+ 
++struct newam335x_timerdev {
++	void __iomem *base;
++	u64 rate;
++};
++
++static irqreturn_t omap2_gp_timer_interrupt(int irq, void *dev_id);
+ static void newam335x_set_mode(enum clock_event_mode mode, struct clock_event_device *evt);
+ static int newam335x_set_next_event(unsigned long evt, struct clock_event_device *unused);
+ 
+ static void __iomem *dmt_base_reg;
++struct newam335x_timerdev time0_dev;
+ 
+ static struct irqaction omap2_gp_timer_irq = {
+ 	.name		= "gp_timer",
+@@ -160,12 +168,46 @@ static void __init low_newam335x_timer_init(void __iomem *base, struct clk *clk)
+ 	__raw_writel(__raw_readl(base+TCLR) | (DMT_TCLR_START|DMT_TCLR_AUTOLOAD), base+TCLR); // start timer
+ }
+ 
++static u64 sched_clock_read(void)
++{
++	return __raw_readl(time0_dev.base+TCRR);
++}
++
++static void newam335x_sched_clock_init(void)
++{
++	struct clk *timer_clk;
++	u32 period;
++	void __iomem *base_reg;
++	base_reg = ioremap(DMTIMER0_REG_BASE, SZ_4K);
++
++	timer_clk = clk_get_sys("dmtimer0", NULL);
++	if (!timer_clk) {
++		early_print("dmtimer0 clk get failed\n");
++		return;
++	}
++
++	__raw_writel((__raw_readl(base_reg+TCLR) & (~(DMT_TCLR_START|DMT_TCLR_AUTOLOAD))), base_reg+TCLR); // stop timer
++	__raw_writel(DMT_TSICR_RESET, base_reg+TSICR);
++	while (__raw_readl(base_reg+TIOCP_CFG) & DMT_TIOCP_RESET)
++		continue;
++
++	__raw_writel(0xFFFFFFFF, base_reg+TLDR);
++	__raw_writel(0, base_reg+TCRR);
++	__raw_writel(__raw_readl(base_reg+TCLR) | (DMT_TCLR_START|DMT_TCLR_AUTOLOAD), base_reg+TCLR); // start timer
++
++	time0_dev.rate = clk_get_rate(timer_clk);
++	time0_dev.base = base_reg;
++	sched_clock_register(sched_clock_read, 32, time0_dev.rate);
++	early_print("register time0 as sched clock %d \n", time0_dev.rate);
++}
++
+ void newam335x_timer_init(void)
+ {
+ 	u32 irqnr;
+ 	struct clk *timer_clk;
+ 
+ 	newam335x_clk_init();
++	newam335x_sched_clock_init();
+ 	dmt_base_reg = ioremap(DMTIMER2_REG_BASE, SZ_4K);
+ 	irqnr = irq_find_mapping(domain, 68);
+ 	if (irqnr)
+@@ -181,4 +223,5 @@ void newam335x_timer_init(void)
+ 	clockevents_config_and_register(&clockevent_newam335x,
+ 				clk_get_rate(timer_clk),
+ 				0x3, 0xffffffff);
++
+ }
+-- 
+1.9.1
+

@@ -1,0 +1,82 @@
+From 4d83c16d8eb0940abcaac1e6147f0e9028205b5d Mon Sep 17 00:00:00 2001
+From: zou cao <cao.zou@windriver.com>
+Date: Tue, 22 Aug 2017 13:24:30 +0800
+Subject: [PATCH 22/34] newam335x: use domain irq as platform resoure irq
+
+---
+ arch/arm/mach-newam335x/interrupt.c |  7 ++++++-
+ arch/arm/mach-newam335x/plat.h      |  1 +
+ arch/arm/mach-newam335x/platform.c  | 13 +++++++++++++
+ 3 files changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/mach-newam335x/interrupt.c b/arch/arm/mach-newam335x/interrupt.c
+index a678aa7..9bc39ee 100644
+--- a/arch/arm/mach-newam335x/interrupt.c
++++ b/arch/arm/mach-newam335x/interrupt.c
+@@ -186,7 +186,7 @@ void __init omap_init_irq(u32 base, int nr_irqs)
+ 	domain = irq_domain_add_legacy(NULL, nr_irqs, irq_base, 0,
+ 				   &irq_domain_simple_ops, NULL);
+ 
+-	early_print("allocate IRQ numbers:%d\n", bank->nr_irqs);
++	early_print("allocate IRQ numbers:%d, irq_base:%d\n", bank->nr_irqs, irq_base);
+ 
+ 	intc_bank_write_reg(0xfffffff, bank, INTC_MIR_SET0);
+ 	intc_bank_write_reg(0xfffffff, bank, INTC_MIR_SET0+0x20);
+@@ -229,6 +229,11 @@ void newam335x_intc_handle_irq(struct pt_regs *regs)
+ 	} while (irqnr);
+ }
+ 
++int get_domain_irq(int hwirq)
++{
++	return irq_find_mapping(domain,	hwirq);
++}
++
+ void test_irq(void)
+ {
+ 	struct gen_irq_bank *bank = irq_banks + 0;
+diff --git a/arch/arm/mach-newam335x/plat.h b/arch/arm/mach-newam335x/plat.h
+index 9b9ff34..8a0fb95 100644
+--- a/arch/arm/mach-newam335x/plat.h
++++ b/arch/arm/mach-newam335x/plat.h
+@@ -7,6 +7,7 @@
+ void g_timer_dump(void);
+ void test_irq(void);
+ void __init board_newam335x_init(void);
++int get_domain_irq(int hwirq);
+ 
+ extern struct irq_domain *domain;
+ #endif
+diff --git a/arch/arm/mach-newam335x/platform.c b/arch/arm/mach-newam335x/platform.c
+index 94fd5d4..0c2f029 100644
+--- a/arch/arm/mach-newam335x/platform.c
++++ b/arch/arm/mach-newam335x/platform.c
+@@ -46,6 +46,11 @@
+ 		.end	= CPSW_SS_BASE + 0x4000,
+ 		.flags	= IORESOURCE_MEM,
+ 	},
++	{
++		.start	= 40 ,
++		.end	= 44 ,
++		.flags	= IORESOURCE_IRQ,
++	},
+ };
+ 
+ static struct platform_device newam335x_eth_device = {
+@@ -57,6 +62,14 @@
+ 
+ void __init board_newam335x_init(void)
+ {
++	int hw_irq, irq;
++
++	hw_irq = newam335x_eth_resources[1].start;
++	irq = get_domain_irq(hw_irq);
++
++	newam335x_eth_resources[1].end += (irq-newam335x_eth_resources[1].start);
++	newam335x_eth_resources[1].start = irq;
+ 	platform_device_register(&newam335x_uart_device);
++
+ 	platform_device_register(&newam335x_eth_device);
+ }
+-- 
+1.9.1
+

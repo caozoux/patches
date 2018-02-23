@@ -1,0 +1,31 @@
+From 8ac8af2e91ea30f5a14b8db2f36d5d272590f889 Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Tue, 15 Aug 2017 09:53:19 +0800
+Subject: [PATCH 14/34] newam335x: newam335x_defconfig:enable the net ethernet
+ config
+
+---
+ arch/arm/configs/newam335x_defconfig | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/arch/arm/configs/newam335x_defconfig b/arch/arm/configs/newam335x_defconfig
+index b012f32..ad4a1e2 100644
+--- a/arch/arm/configs/newam335x_defconfig
++++ b/arch/arm/configs/newam335x_defconfig
+@@ -7,5 +7,13 @@ CONFIG_DEBUG_NEWAM335X_UART1=y
+ CONFIG_DEBUG_LL=y
+ CONFIG_GENERIC_IRQ_CHIP=y
+ CONFIG_SERIAL_NEWAM335X=y
++CONFIG_IPV6=y
++CONFIG_NET=y
++CONFIG_INET=y
++CONFIG_NETDEVICES=y
++CONFIG_ETHERNET=y
++CONFIG_NET_VENDOR_NEWAM335x=y
++CONFIG_NEWAM335X_ETH_CPSW=y
++CONFIG_NFS_FS=y
+ #CONFIG_GENERIC_UART1=Y
+ #DEBUG_AM33XXUART1=y
+-- 
+1.9.1
+

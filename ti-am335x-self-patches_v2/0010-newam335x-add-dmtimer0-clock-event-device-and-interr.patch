@@ -1,0 +1,336 @@
+From 063a103619da2d7971fee9bf3f62a99d4806dad2 Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Mon, 14 Aug 2017 14:54:53 +0800
+Subject: [PATCH 10/34] newam335x: add dmtimer0 clock event device and
+ interrupt
+
+kernel need a tick event: tick_notify, it based on a clock event,
+here add dmtimer0 as clock evetn device, in its interrupt handle,
+it will call clockevent_newam335x->event_handle to trigger the
+tick notify.
+---
+ arch/arm/mach-newam335x/clk.c   |  96 ++++++++++++++++++++
+ arch/arm/mach-newam335x/clk.h   |   6 ++
+ arch/arm/mach-newam335x/timer.c | 194 ++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 296 insertions(+)
+ create mode 100644 arch/arm/mach-newam335x/clk.c
+ create mode 100644 arch/arm/mach-newam335x/clk.h
+ create mode 100644 arch/arm/mach-newam335x/timer.c
+
+diff --git a/arch/arm/mach-newam335x/clk.c b/arch/arm/mach-newam335x/clk.c
+new file mode 100644
+index 0000000..672ee5b
+--- /dev/null
++++ b/arch/arm/mach-newam335x/clk.c
+@@ -0,0 +1,96 @@
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++
++#include <asm/exception.h>
++#include <asm/mach/irq.h>
++#include <linux/irqdomain.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/irq.h>
++#include <asm/setup.h>
++#include <linux/time.h>
++#include <linux/clkdev.h>
++#include <linux/clk.h>
++#include <linux/clkdev.h>
++#include <linux/clk-provider.h>
++#include "plat.h"
++
++#define CLK_BASE_REG 0x44E00000
++static void __iomem *clk_base_reg;
++
++#if 0
++struct clk clk_dm_timer0 = {
++	.rate = 115200,
++};
++
++void newam335x_clk_init(void)
++{
++	int ret;
++
++	return devm_clk_register(cpu_dev, &spc->hw);
++
++	clk_base_reg = ioremap(CLK_BASE_REG, SZ_16K);
++	ret = clk_register_clkdev(&clk_dm_timer0, "dmtimer", "dmtimer.0");
++	if (ret) {
++		early_print("register dm_timer0 failed\n");
++	}
++	//clk_dump(clk_base_reg);
++}
++#else
++
++unsigned long omap2_table_mpu_recalc(struct clk_hw *clk,
++				     unsigned long parent_rate)
++{
++	return 10000000;
++}
++
++int omap2_select_table_rate(struct clk_hw *hw, unsigned long rate,
++			    unsigned long parent_rate)
++{
++	return 0;
++}
++
++long dmtimer0_round_rate(struct clk_hw *hw, unsigned long rate,
++			unsigned long *parent_rate)
++{
++	return 10000000;
++}
++
++static const struct clk_ops virt_prcm_set_ops = {
++	.recalc_rate	= omap2_table_mpu_recalc,
++	.set_rate	= omap2_select_table_rate,
++	.round_rate = dmtimer0_round_rate,
++};
++
++void newam335x_clk_init(void)
++{
++#if 1
++	struct clk_hw *hw;
++
++	hw  = clk_hw_register_fixed_rate(NULL, "dmtimer0", NULL, 0,
++						   1000000);
++	clk_hw_register_clkdev(hw,NULL, "dmtimer0");
++#else
++
++	struct clk_init_data init = { NULL };
++	struct clk *clk;
++	struct clk_hw *hw = NULL;
++	hw = kzalloc(sizeof(*hw), GFP_KERNEL);
++
++	init.name = "dmtimer0";
++	init.ops = &virt_prcm_set_ops;
++	init.parent_names = NULL;
++	init.num_parents = 0;
++
++	hw->init = &init;
++	clk = clk_register(NULL, hw);
++	//clkdev_create(clk, "cpufreq_ck", NULL);
++#endif
++
++}
++#endif
++
+diff --git a/arch/arm/mach-newam335x/clk.h b/arch/arm/mach-newam335x/clk.h
+new file mode 100644
+index 0000000..19034eb
+--- /dev/null
++++ b/arch/arm/mach-newam335x/clk.h
+@@ -0,0 +1,6 @@
++#ifndef _GENERIC_CLK_
++#define _GENERIC_CLK_
++
++
++void newam335x_timer_init(void);
++#endif
+diff --git a/arch/arm/mach-newam335x/timer.c b/arch/arm/mach-newam335x/timer.c
+new file mode 100644
+index 0000000..3e13cde
+--- /dev/null
++++ b/arch/arm/mach-newam335x/timer.c
+@@ -0,0 +1,194 @@
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/clockchips.h>
++
++#include <asm/exception.h>
++#include <asm/mach/irq.h>
++#include <linux/irqdomain.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/irq.h>
++#include <asm/setup.h>
++#include <linux/time.h>
++#include <linux/clkdev.h>
++#include <linux/clk.h>
++#include <linux/sh_clk.h>
++#include "plat.h"
++#include "clk.h"
++
++static irqreturn_t omap2_gp_timer_interrupt(int irq, void *dev_id);
++
++#define DMTIMER0_REG_BASE 0x44E05000
++
++#define TIDR 0x0
++#define TIOCP_CFG  0x10
++#define IRQ_EOI  0x20
++#define IRQSTATUS_RAW  0x24
++#define IRQSTATUS  0x28
++#define IRQENABLE_SET  0x2C
++#define IRQENABLE_CLR  0x30
++#define IRQWAKEEN  0x34
++#define TCLR  0x38
++#define TCRR  0x3C
++#define TLDR  0x40
++#define TTGR  0x44
++#define TWPS  0x48
++#define TMAR  0x4C
++#define TCAR1  0x50
++#define TSICR  0x54
++#define TCAR2  0x58
++
++#define	  DMT_IRQ_OVF		  (1 << 1)	/* IRQ: Overflow */
++#define	  DMT_TSICR_RESET	  (1 << 1)	/* TSICR perform soft reset */
++#define	  DMT_TIOCP_RESET	  (1 << 0)	/* TIOCP perform soft reset */
++#define	  DMT_TCLR_START	  (1 << 0)	/* Start timer */
++#define	  DMT_TCLR_AUTOLOAD	  (1 << 1)	/* Auto-reload on overflow */
++#define	  DMT_TCLR_PRES_MASK	  (7 << 2)	/* Prescaler mask */
++#define	  DMT_TCLR_PRES_ENABLE	  (1 << 5)	/* Prescaler enable */
++#define	  DMT_TCLR_COMP_ENABLE	  (1 << 6)	/* Compare enable */
++#define	  DMT_TCLR_PWM_HIGH	  (1 << 7)	/* PWM default output high */
++#define	  DMT_TCLR_CAPTRAN_MASK	  (3 << 8)	/* Capture transition mask */
++#define	  DMT_TCLR_CAPTRAN_NONE	  (0 << 8)	/* Capture: none */
++#define	  DMT_TCLR_CAPTRAN_LOHI	  (1 << 8)	/* Capture lo->hi transition */
++#define	  DMT_TCLR_CAPTRAN_HILO	  (2 << 8)	/* Capture hi->lo transition */
++#define	  DMT_TCLR_CAPTRAN_BOTH	  (3 << 8)	/* Capture both transitions */
++#define	  DMT_TCLR_TRGMODE_MASK	  (3 << 10)	/* Trigger output mode mask */
++#define	  DMT_TCLR_TRGMODE_NONE	  (0 << 10)	/* Trigger off */
++#define	  DMT_TCLR_TRGMODE_OVFL	  (1 << 10)	/* Trigger on overflow */
++#define	  DMT_TCLR_TRGMODE_BOTH	  (2 << 10)	/* Trigger on match + ovflow */
++#define	  DMT_TCLR_PWM_PTOGGLE	  (1 << 12)	/* PWM toggles */
++#define	  DMT_TCLR_CAP_MODE_2ND	  (1 << 13)	/* Capture second event mode */
++#define	  DMT_TCLR_GPO_CFG	  (1 << 14)	/* (no descr in datasheet) */
++
++static void newam335x_set_mode(enum clock_event_mode mode, struct clock_event_device *evt);
++static int newam335x_set_next_event(unsigned long evt, struct clock_event_device *unused);
++
++static void __iomem *dmt_base_reg;
++
++static struct irqaction omap2_gp_timer_irq = {
++	.name		= "gp_timer",
++	.flags		= IRQF_TIMER | IRQF_IRQPOLL,
++	.handler	= omap2_gp_timer_interrupt,
++};
++
++static struct clock_event_device clockevent_newam335x = {
++	.name       = "newam335x_timer",
++	.features   = CLOCK_EVT_FEAT_ONESHOT,
++	//.set_mode   = newam335x_set_mode,
++	.set_next_event = newam335x_set_next_event,
++	.rating     = 200,
++};
++
++static int newam335x_set_next_event(unsigned long evt, struct clock_event_device *unused)
++{
++	return 0;
++}
++
++static irqreturn_t omap2_gp_timer_interrupt(int irq, void *dev_id)
++{
++	u32 reg;
++	struct clock_event_device *evt = &clockevent_newam335x;
++	reg = __raw_readl(dmt_base_reg +IRQSTATUS);
++	early_print("%s %08x\n", __func__, reg);
++	evt->event_handler(evt);
++	__raw_writel(reg, dmt_base_reg+IRQSTATUS);
++	return IRQ_HANDLED;
++}
++
++void timer_dump(void __iomem *base)
++{
++	early_print("TIDR:%08x\n",__raw_readl(base+TIDR));  
++	early_print("TIOCP_CFG :%08x\n",__raw_readl(base+TIOCP_CFG ));  
++	early_print("IRQ_EOI :%08x\n",__raw_readl(base+IRQ_EOI ));  
++	early_print("IRQSTATUS_RAW :%08x\n",__raw_readl(base+IRQSTATUS_RAW ));  
++	early_print("IRQSTATUS :%08x\n",__raw_readl(base+IRQSTATUS ));  
++	early_print("IRQENABLE_SET :%08x\n",__raw_readl(base+IRQENABLE_SET ));  
++	early_print("IRQENABLE_CLR :%08x\n",__raw_readl(base+IRQENABLE_CLR ));  
++	early_print("IRQWAKEEN :%08x\n",__raw_readl(base+IRQWAKEEN ));  
++	early_print("TCLR :%08x\n",__raw_readl(base+TCLR ));  
++	early_print("TCRR :%08x\n",__raw_readl(base+TCRR ));  
++	early_print("TLDR :%08x\n",__raw_readl(base+TLDR ));  
++	early_print("TTGR :%08x\n",__raw_readl(base+TTGR ));  
++	early_print("TWPS :%08x\n",__raw_readl(base+TWPS ));  
++	early_print("TMAR :%08x\n",__raw_readl(base+TMAR ));  
++	early_print("TCAR1 :%08x\n",__raw_readl(base+TCAR1 ));  
++	early_print("TSICR :%08x\n",__raw_readl(base+TSICR ));  
++	early_print("TCAR2 :%08x\n",__raw_readl(base+TCAR2 ));  
++}
++
++void g_timer_dump(void)
++{
++	timer_dump(dmt_base_reg);
++}
++
++#define TIME_START(reg) 		   __raw_writel(__raw_readl(reg+TCLR) | 1<<1, reg+TCLR)
++#define TIME_STOP(reg) 			   __raw_writel(__raw_readl(reg+TCLR) | 1<<1, reg+TCLR)
++#define TIME_SET_CNT(reg, val)     __raw_writel(val, reg+TCRR)
++#define TIME_RELOAD_EN(reg)     __raw_writel(__raw_readl(reg+TCLR) | 1<<1, reg+TCLR)
++#define TIME_RELOAD_DIS(reg)     __raw_writel(__raw_readl(reg+TCLR) & ~(1<<1), reg+TCLR)
++#define TIME_INIT_EN(reg)     __raw_writel(__raw_readl(reg+IRQENABLE_SET) | 0xf, reg+IRQENABLE_SET)
++#define TIME_RESET(reg)    __raw_writel(__raw_readl(reg+TIOCP_CFG) | 1, reg+TCLR) 
++
++static void __init low_newam335x_timer_init(void __iomem *base)
++{
++	__raw_writel((__raw_readl(base+TCLR) & (~(DMT_TCLR_START|DMT_TCLR_AUTOLOAD))), base+TCLR); // stop timer
++	__raw_writel(DMT_TSICR_RESET, base+TSICR);
++	while (__raw_readl(base+TIOCP_CFG) & DMT_TIOCP_RESET)
++		continue;
++
++	__raw_writel(0, base+TLDR);
++	__raw_writel(0, base+TCRR);
++	//__raw_writel(TCLR, DMT_TCLR_START | DMT_TCLR_AUTOLOAD);
++
++	/*
++	 * Stop the timer before changing it.  This routine will often be called
++	 * while the timer is still running, to either lengthen or shorten the
++	 * current event time.  We need to ensure the timer doesn't expire while
++	 * we're working with it.
++	 *
++	 * Also clear any pending interrupt status, because it's at least
++	 * theoretically possible that we're running in a primary interrupt
++	 * context now, and a timer interrupt could be pending even before we
++	 * stopped the timer.  The more likely case is that we're being called
++	 * from the et_event_cb() routine dispatched from our own handler, but
++	 * it's not clear to me that that's the only case possible.
++	 */
++	__raw_writel(DMT_IRQ_OVF, base+IRQSTATUS);
++	/*
++	 * Set auto-reload and current-count values.  This timer hardware counts
++	 * up from the initial/reload value and interrupts on the zero rollover.
++	 */
++	__raw_writel(0xFFFFFFFF - 0x8000, base+TLDR);
++	__raw_writel(0xFFFFFFFF - 0x8000, base+TCRR);
++
++	/* Enable overflow interrupt, and start the timer. */
++	__raw_writel(DMT_IRQ_OVF, base+IRQENABLE_SET);
++	__raw_writel(__raw_readl(base+TCLR) | (DMT_TCLR_START|DMT_TCLR_AUTOLOAD), base+TCLR); // start timer
++}
++
++void newam335x_timer_init(void)
++{
++	u32 irqnr;
++	struct clk *timer_clk;
++
++	newam335x_clk_init();
++	dmt_base_reg = ioremap(DMTIMER0_REG_BASE, SZ_4K);
++	low_newam335x_timer_init(dmt_base_reg);
++	irqnr = irq_find_mapping(domain, 66);
++	if (irqnr)
++		setup_irq(irqnr,&omap2_gp_timer_irq);
++
++	timer_clk = clk_get_sys("dmtimer0", NULL);
++	if (IS_ERR(timer_clk)) {
++		printk("get dmtimer0 failed\n");
++		return;
++	}
++	early_print("DEBUG: register timer\n");
++	clockevents_config_and_register(&clockevent_newam335x,
++				clk_get_rate(timer_clk),
++				0xff, 0xfffffffe);
++}
+-- 
+1.9.1
+

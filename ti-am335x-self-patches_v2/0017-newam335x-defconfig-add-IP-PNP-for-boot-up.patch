@@ -1,0 +1,30 @@
+From bb70f72c5106037ce3b5fba8ce23ddbecf956bf4 Mon Sep 17 00:00:00 2001
+From: zou cao <cao.zou@windriver.com>
+Date: Fri, 18 Aug 2017 12:39:03 +0800
+Subject: [PATCH 17/34] newam335x:defconfig: add IP PNP for boot up
+
+CONFIG_IP_PNP
+CONFIG_IP_PNP_BOOTP=
+CONFIG_IP_PNP_RARP
+is necessary for nfs boot, it will let kernel to auto config the eth
+device for bootargs "ip=DHCP".
+---
+ arch/arm/configs/newam335x_defconfig | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/arch/arm/configs/newam335x_defconfig b/arch/arm/configs/newam335x_defconfig
+index ad4a1e2..7e03820 100644
+--- a/arch/arm/configs/newam335x_defconfig
++++ b/arch/arm/configs/newam335x_defconfig
+@@ -15,5 +15,8 @@ CONFIG_ETHERNET=y
+ CONFIG_NET_VENDOR_NEWAM335x=y
+ CONFIG_NEWAM335X_ETH_CPSW=y
+ CONFIG_NFS_FS=y
++CONFIG_IP_PNP=y
++CONFIG_IP_PNP_BOOTP=y
++CONFIG_IP_PNP_RARP=y
+ #CONFIG_GENERIC_UART1=Y
+ #DEBUG_AM33XXUART1=y
+-- 
+1.9.1
+

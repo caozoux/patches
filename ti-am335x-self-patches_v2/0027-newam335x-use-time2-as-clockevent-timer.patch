@@ -1,0 +1,208 @@
+From 1dec1bbb75a49a96b56d2507576a40addfa649d3 Mon Sep 17 00:00:00 2001
+From: zou cao <cao.zou@windriver.com>
+Date: Thu, 31 Aug 2017 10:51:11 +0800
+Subject: [PATCH 27/34] newam335x: use time2 as clockevent timer
+
+time2 rate is 25M, here set the count 0xffffffff - (25M/HZ-1), as
+the right clockevent rate.
+
+Signed-off-by: zou cao <cao.zou@windriver.com>
+---
+ arch/arm/mach-newam335x/clk.c   | 48 +++++----------------------------------
+ arch/arm/mach-newam335x/timer.c | 50 +++++++++++++++--------------------------
+ 2 files changed, 23 insertions(+), 75 deletions(-)
+
+diff --git a/arch/arm/mach-newam335x/clk.c b/arch/arm/mach-newam335x/clk.c
+index 672ee5b..3f5cdc2 100644
+--- a/arch/arm/mach-newam335x/clk.c
++++ b/arch/arm/mach-newam335x/clk.c
+@@ -22,30 +22,11 @@
+ #define CLK_BASE_REG 0x44E00000
+ static void __iomem *clk_base_reg;
+ 
+-#if 0
+-struct clk clk_dm_timer0 = {
+-	.rate = 115200,
+-};
+-
+-void newam335x_clk_init(void)
+-{
+-	int ret;
+-
+-	return devm_clk_register(cpu_dev, &spc->hw);
+-
+-	clk_base_reg = ioremap(CLK_BASE_REG, SZ_16K);
+-	ret = clk_register_clkdev(&clk_dm_timer0, "dmtimer", "dmtimer.0");
+-	if (ret) {
+-		early_print("register dm_timer0 failed\n");
+-	}
+-	//clk_dump(clk_base_reg);
+-}
+-#else
+ 
+ unsigned long omap2_table_mpu_recalc(struct clk_hw *clk,
+ 				     unsigned long parent_rate)
+ {
+-	return 10000000;
++	return 25000000;
+ }
+ 
+ int omap2_select_table_rate(struct clk_hw *hw, unsigned long rate,
+@@ -57,7 +38,7 @@ int omap2_select_table_rate(struct clk_hw *hw, unsigned long rate,
+ long dmtimer0_round_rate(struct clk_hw *hw, unsigned long rate,
+ 			unsigned long *parent_rate)
+ {
+-	return 10000000;
++	return 25000000;
+ }
+ 
+ static const struct clk_ops virt_prcm_set_ops = {
+@@ -68,29 +49,10 @@ long dmtimer0_round_rate(struct clk_hw *hw, unsigned long rate,
+ 
+ void newam335x_clk_init(void)
+ {
+-#if 1
+ 	struct clk_hw *hw;
+ 
+-	hw  = clk_hw_register_fixed_rate(NULL, "dmtimer0", NULL, 0,
+-						   1000000);
+-	clk_hw_register_clkdev(hw,NULL, "dmtimer0");
+-#else
+-
+-	struct clk_init_data init = { NULL };
+-	struct clk *clk;
+-	struct clk_hw *hw = NULL;
+-	hw = kzalloc(sizeof(*hw), GFP_KERNEL);
+-
+-	init.name = "dmtimer0";
+-	init.ops = &virt_prcm_set_ops;
+-	init.parent_names = NULL;
+-	init.num_parents = 0;
+-
+-	hw->init = &init;
+-	clk = clk_register(NULL, hw);
+-	//clkdev_create(clk, "cpufreq_ck", NULL);
+-#endif
++	hw  = clk_hw_register_fixed_rate(NULL, "dmtimer2", NULL, 0,
++						   25000000);
++	clk_hw_register_clkdev(hw, NULL, "dmtimer2");
+ 
+ }
+-#endif
+-
+diff --git a/arch/arm/mach-newam335x/timer.c b/arch/arm/mach-newam335x/timer.c
+index 1fa83c4..1aa8ead 100644
+--- a/arch/arm/mach-newam335x/timer.c
++++ b/arch/arm/mach-newam335x/timer.c
+@@ -23,6 +23,7 @@
+ static irqreturn_t omap2_gp_timer_interrupt(int irq, void *dev_id);
+ 
+ #define DMTIMER0_REG_BASE 0x44E05000
++#define DMTIMER2_REG_BASE 0x48040000
+ 
+ #define TIDR 0x0
+ #define TIOCP_CFG  0x10
+@@ -77,10 +78,10 @@
+ 
+ static struct clock_event_device clockevent_newam335x = {
+ 	.name       = "newam335x_timer",
+-	.features   = CLOCK_EVT_FEAT_ONESHOT,
++	.features       = CLOCK_EVT_FEAT_PERIODIC | CLOCK_EVT_FEAT_ONESHOT,
+ 	//.set_mode   = newam335x_set_mode,
+ 	.set_next_event = newam335x_set_next_event,
+-	.rating     = 200,
++	.rating     = 300,
+ };
+ 
+ static int newam335x_set_next_event(unsigned long evt, struct clock_event_device *unused)
+@@ -92,6 +93,7 @@ static irqreturn_t omap2_gp_timer_interrupt(int irq, void *dev_id)
+ {
+ 	u32 reg;
+ 	struct clock_event_device *evt = &clockevent_newam335x;
++	//early_print("timer interrupt\n");
+ 	reg = __raw_readl(dmt_base_reg +IRQSTATUS);
+ 	evt->event_handler(evt);
+ 	__raw_writel(reg, dmt_base_reg+IRQSTATUS);
+@@ -132,8 +134,9 @@ void g_timer_dump(void)
+ #define TIME_INIT_EN(reg)     __raw_writel(__raw_readl(reg+IRQENABLE_SET) | 0xf, reg+IRQENABLE_SET)
+ #define TIME_RESET(reg)    __raw_writel(__raw_readl(reg+TIOCP_CFG) | 1, reg+TCLR) 
+ 
+-static void __init low_newam335x_timer_init(void __iomem *base)
++static void __init low_newam335x_timer_init(void __iomem *base, struct clk *clk)
+ {
++	u32 period;
+ 	__raw_writel((__raw_readl(base+TCLR) & (~(DMT_TCLR_START|DMT_TCLR_AUTOLOAD))), base+TCLR); // stop timer
+ 	__raw_writel(DMT_TSICR_RESET, base+TSICR);
+ 	while (__raw_readl(base+TIOCP_CFG) & DMT_TIOCP_RESET)
+@@ -141,36 +144,19 @@ static void __init low_newam335x_timer_init(void __iomem *base)
+ 
+ 	__raw_writel(0, base+TLDR);
+ 	__raw_writel(0, base+TCRR);
+-	//__raw_writel(TCLR, DMT_TCLR_START | DMT_TCLR_AUTOLOAD);
+-
+-	/*
+-	 * Stop the timer before changing it.  This routine will often be called
+-	 * while the timer is still running, to either lengthen or shorten the
+-	 * current event time.  We need to ensure the timer doesn't expire while
+-	 * we're working with it.
+-	 *
+-	 * Also clear any pending interrupt status, because it's at least
+-	 * theoretically possible that we're running in a primary interrupt
+-	 * context now, and a timer interrupt could be pending even before we
+-	 * stopped the timer.  The more likely case is that we're being called
+-	 * from the et_event_cb() routine dispatched from our own handler, but
+-	 * it's not clear to me that that's the only case possible.
+-	 */
+ 	__raw_writel(DMT_IRQ_OVF, base+IRQSTATUS);
+ 	/*
+ 	 * Set auto-reload and current-count values.  This timer hardware counts
+ 	 * up from the initial/reload value and interrupts on the zero rollover.
+ 	 */
+-#if 0
+-	__raw_writel(0xFFFFFFFF - 0x8000, base+TLDR);
+-	__raw_writel(0xFFFFFFFF - 0x8000, base+TCRR);
+-#else
+-	__raw_writel(0xFFFFFFFF - 0x200, base+TLDR);
+-	__raw_writel(0xFFFFFFFF - 0x200, base+TCRR);
+-#endif
++	period = clk_get_rate(clk)/HZ;
++	period -= 1;
++	__raw_writel(0xFFFFFFFF - period, base+TLDR);
++	__raw_writel(0xFFFFFFFF - period, base+TCRR);
+ 
+ 	/* Enable overflow interrupt, and start the timer. */
+ 	__raw_writel(DMT_IRQ_OVF, base+IRQENABLE_SET);
++
+ 	__raw_writel(__raw_readl(base+TCLR) | (DMT_TCLR_START|DMT_TCLR_AUTOLOAD), base+TCLR); // start timer
+ }
+ 
+@@ -180,19 +166,19 @@ void newam335x_timer_init(void)
+ 	struct clk *timer_clk;
+ 
+ 	newam335x_clk_init();
+-	dmt_base_reg = ioremap(DMTIMER0_REG_BASE, SZ_4K);
+-	low_newam335x_timer_init(dmt_base_reg);
+-	irqnr = irq_find_mapping(domain, 66);
++	dmt_base_reg = ioremap(DMTIMER2_REG_BASE, SZ_4K);
++	irqnr = irq_find_mapping(domain, 68);
+ 	if (irqnr)
+ 		setup_irq(irqnr,&omap2_gp_timer_irq);
+ 
+-	timer_clk = clk_get_sys("dmtimer0", NULL);
++	timer_clk = clk_get_sys("dmtimer2", NULL);
+ 	if (IS_ERR(timer_clk)) {
+-		printk("get dmtimer0 failed\n");
++		printk("get dmtimer2 failed\n");
+ 		return;
+ 	}
+-	early_print("DEBUG: register timer\n");
++	low_newam335x_timer_init(dmt_base_reg, timer_clk);
++	early_print("DEBUG: register timer rate :%d\n", clk_get_rate(timer_clk));
+ 	clockevents_config_and_register(&clockevent_newam335x,
+ 				clk_get_rate(timer_clk),
+-				0xff, 0xfffffffe);
++				0x3, 0xffffffff);
+ }
+-- 
+1.9.1
+

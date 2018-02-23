@@ -1,0 +1,31 @@
+From 119a0c109f723f27a38095061f7fed132e0d013e Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Fri, 4 Aug 2017 13:35:36 +0800
+Subject: [PATCH 04/34] newam335x:serial: fixed the error bit check of busuart
+
+---
+ arch/arm/include/debug/newam335x.S | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm/include/debug/newam335x.S b/arch/arm/include/debug/newam335x.S
+index f1fcb14..d9f7690 100644
+--- a/arch/arm/include/debug/newam335x.S
++++ b/arch/arm/include/debug/newam335x.S
+@@ -32,10 +32,12 @@
+ 		.endm
+ 
+ 		.macro	busyuart,rd,rx
++		add \rx, #0x14
+ 1001:		ldrb	\rd, [\rx]		@ rx contains UART_LSR address
+-		and	\rd, \rd, #(UART_LSR_TEMT | UART_LSR_THRE)
+-		teq	\rd, #(UART_LSR_TEMT | UART_LSR_THRE)
++		and	\rd, \rd, #0x20
++		teq	\rd, #0x20
+ 		bne	1001b
++		sub \rx, #0x14
+ 		.endm
+ 
+ 		.macro	waituart,rd,rx
+-- 
+1.9.1
+

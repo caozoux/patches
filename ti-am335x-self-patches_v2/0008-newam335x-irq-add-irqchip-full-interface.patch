@@ -1,0 +1,288 @@
+From a88df7a645fbe3530f8f79c590ee1155b1189a9d Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Fri, 4 Aug 2017 15:05:17 +0800
+Subject: [PATCH 08/34] newam335x:irq: add irqchip full interface
+
+(1): irq chip:
+ct->chip.irq_ack: reset the irq pend bit, so irq control can revieve a
+new interrupt signal
+
+ct->chip.irq_mask: mask irq number
+ct->chip.irq_unmask: unmask irq number
+ct->chip.irq_disable: disable irq number
+ct->chip.irq_enable: enable irq number
+
+irq_setup_generic_chip --> register irq control chip
+
+(2): irq domain
+     use software irq number to replace hw irq number
+         irq_base = irq_alloc_descs(-1, 0, nr_irqs, 0);
+	 domain = irq_domain_add_legacy(NULL, nr_irqs, irq_base, 0,
+				   &irq_domain_simple_ops, NULL);
+
+     Note: you can use this to get tracsfer hw iqr to soft irq number
+	irqnr = irq_find_mapping(domain, irqnr);
+
+(3): handle irq:
+    you can add the irq handle in machine struct:
+MACHINE_START(NEWAM335X, "newam335x board")
+	.handle_irq	= newam335x_intc_handle_irq,
+    than transfer hw irq number to soft irq number, then call:
+	handle_IRQ(irqnr, regs);
+---
+ arch/arm/mach-newam335x/board.c     |  14 ++--
+ arch/arm/mach-newam335x/interrupt.c | 145 ++++++++++++++++++++++++++++++++----
+ 2 files changed, 139 insertions(+), 20 deletions(-)
+
+diff --git a/arch/arm/mach-newam335x/board.c b/arch/arm/mach-newam335x/board.c
+index 8882013..c719553 100644
+--- a/arch/arm/mach-newam335x/board.c
++++ b/arch/arm/mach-newam335x/board.c
+@@ -11,6 +11,8 @@
+ #include <linux/platform_data/gpio-omap.h>
+ #include <linux/irq.h>
+ 
++#include <asm/exception.h>
++#include <asm/mach/irq.h>
+ #include <asm/mach-types.h>
+ #include <asm/mach/arch.h>
+ #include <asm/mach/map.h>
+@@ -53,11 +55,7 @@ void __init newam335x_init_early(void)
+ void __init newam335x_init_irq(void)
+ {
+ 	early_print("%s\n", __func__);
+-}
+-
+-void __init newam335x_intc_handle_irq(void)
+-{
+-	early_print("%s\n", __func__);
++	omap_init_irq(OMAP_INTR_CON_BASE, 96);
+ }
+ 
+ void __init newam335x_evm_init(void)
+@@ -73,6 +71,7 @@ void __init newam335x_init_late(void)
+ void __init newam335x_sync32k_timer_init(void)
+ {
+ 	early_print("%s\n", __func__);
++	newam335x_timer_init();
+ }
+ 
+ void __init newam335x_restart(void)
+@@ -80,6 +79,11 @@ void __init newam335x_restart(void)
+ 	early_print("%s\n", __func__);
+ }
+ 
++asmlinkage void __exception_irq_entry low_newam335x_intc_handle_irq(struct pt_regs *regs)
++{
++	newam335x_intc_handle_irq(regs);
++}
++
+ MACHINE_START(NEWAM335X, "newam335x board")
+ 	.atag_offset	= 0x100,
+ 	.reserve	= newam335x_reserve,
+diff --git a/arch/arm/mach-newam335x/interrupt.c b/arch/arm/mach-newam335x/interrupt.c
+index 438035d9..0db1d41 100644
+--- a/arch/arm/mach-newam335x/interrupt.c
++++ b/arch/arm/mach-newam335x/interrupt.c
+@@ -17,18 +17,27 @@
+ #define INTC_REVISION		0x0000
+ #define INTC_SYSCONFIG		0x0010
+ #define INTC_SYSSTATUS		0x0014
+-#define INTC_SIR		0x0040
++#define INTC_SIR			0x0040
+ #define INTC_CONTROL		0x0048
+ #define INTC_PROTECTION		0x004C
+-#define INTC_IDLE		0x0050
++#define INTC_IDLE			0x0050
+ #define INTC_THRESHOLD		0x0068
+-#define INTC_MIR0		0x0084
++#define INTC_MIR0			0x0084
+ #define INTC_MIR_CLEAR0		0x0088
+ #define INTC_MIR_SET0		0x008c
+ #define INTC_PENDING_IRQ0	0x0098
++#define INTC_ISR_CLEAR0    	0x0094
++#define INTC_ISR_SET0      	0x0090
++#define INTC_ITR0           0x0080
++#define INTC_ITR1           0x00A0
++#define INTC_ITR2           0x00C0
++#define INTC_ITR3           0x00e0
+ 
+ /* Number of IRQ state bits in each MIR register */
+ #define IRQ_BITS_PER_REG	32
++#define INTCPS_SIR_IRQ_OFFSET	0x0040	/* omap2/3 active interrupt offset */
++#define ACTIVEIRQ_MASK		0x7f	/* omap2/3 active interrupt bits */
++
+ static struct gen_irq_bank {
+ 	void __iomem *base_reg;
+ 	unsigned int nr_irqs;
+@@ -38,7 +47,8 @@
+ 		.nr_irqs	= 96,
+ 	},
+ };
+-static struct irq_domain *domain;
++
++struct irq_domain *domain;
+ 
+ static void intc_bank_write_reg(u32 val, struct gen_irq_bank *bank, u16 reg)
+ {
+@@ -60,6 +70,31 @@ static void omap_mask_ack_irq(struct irq_data *d)
+ 	omap_ack_irq(d);
+ }
+ 
++static void gen_irq_mask(struct irq_data *d)
++{
++	u32 mask;
++	void __iomem *reg;
++	reg = (d->hwirq/32)*0x20 + irq_banks[0].base_reg + INTC_MIR_SET0;
++	mask =__raw_readl(reg);
++	mask |= 1<<(d->hwirq%32);
++	__raw_writel(mask, reg);
++}
++
++static void gen_irq_unmask(struct irq_data *d)
++{
++	__raw_writel(1<<(d->hwirq%32), irq_banks[0].base_reg+INTC_MIR_CLEAR0+(d->hwirq/32)*0x20);
++}
++
++static void gen_irq_enable(struct irq_data *d)
++{
++	__raw_writel(1<<(d->hwirq%32), irq_banks[0].base_reg+INTC_MIR_CLEAR0+(d->hwirq/32)*0x20);
++}
++
++static void gen_irq_disable(struct irq_data *d)
++{
++	__raw_writel(1<<(d->hwirq%32), irq_banks[0].base_reg+INTC_MIR_SET0+(d->hwirq/32)*0x20);
++}
++
+ static void __init omap_irq_bank_init_one(struct gen_irq_bank *bank)
+ {
+ 	unsigned long tmp;
+@@ -89,34 +124,114 @@ static void __init omap_irq_bank_init_one(struct gen_irq_bank *bank)
+ 					handle_level_irq);
+ 	ct = gc->chip_types;
+ 	ct->chip.irq_ack = omap_mask_ack_irq;
+-	ct->chip.irq_mask = irq_gc_mask_disable_reg;
+-	ct->chip.irq_unmask = irq_gc_unmask_enable_reg;
++	ct->chip.irq_mask = gen_irq_mask;
++	ct->chip.irq_unmask = gen_irq_unmask;
++	ct->chip.irq_disable = gen_irq_disable;
++	ct->chip.irq_enable = gen_irq_enable;
++	
+ 	ct->chip.flags |= IRQCHIP_SKIP_SET_WAKE;
+ 
+-	ct->regs.enable = INTC_MIR_CLEAR0;
+-	ct->regs.disable = INTC_MIR_SET0;
++	//ct->regs.enable = INTC_MIR_CLEAR0;
++	//ct->regs.disable = INTC_MIR_SET0;
+ 	irq_setup_generic_chip(gc, IRQ_MSK(num), IRQ_GC_INIT_MASK_CACHE,
+ 				IRQ_NOREQUEST | IRQ_NOPROBE, 0);
+ }
+ 
++static irqreturn_t omap2_sw_interrupt(int irq, void *dev_id)
++{
++	u32 status = intc_bank_read_reg(irq_banks + 0, INTC_ISR_SET0);
++	early_print("%s INTC_PENDING_IRQ:%08x %08x\n", __func__, intc_bank_read_reg(irq_banks + 0, INTC_PENDING_IRQ0), status);
++	//intc_bank_write_reg(status, irq_banks + 0, INTC_ISR_CLEAR0);
++	g_timer_dump();
++	return IRQ_HANDLED;
++}
++
++static struct irqaction omap2_sw_irq = {
++	.name           = "sw_irq",
++	//.flags          = IRQF_DISABLED,
++	.flags  		= IORESOURCE_IRQ | IRQF_TRIGGER_RISING,
++	.handler        = omap2_sw_interrupt,
++};
++
+ void __init omap_init_irq(u32 base, int nr_irqs)
+ {
+-	int j, irq_base;
++	int i, j, irq_base;
++	u32 irqnr;
+ 	struct gen_irq_bank *bank = irq_banks + 0;
++	void __iomem *base_reg;
++
++	base_reg = ioremap(base, SZ_4K);
++
++	if (base_reg) {
++		early_print("irq chip map error\n");
++		return;
++	}
+ 
+ 	irq_base = irq_alloc_descs(-1, 0, nr_irqs, 0);
+ 	if (irq_base < 0) {
+-		early_print("Couldn't allocate IRQ numbers\n");
++		early_print("allocate IRQ numbers error\n");
+ 		irq_base = 0;
+ 	}
+ 
+-	bank->base_reg = ioremap(base, SZ_4K);
+-	bank->nr_irqs = nr_irqs;
++	for (i = 0; i < ARRAY_SIZE(irq_banks); ++i) {
++		struct gen_irq_bank *bank = irq_banks + i;
++		bank->base_reg = base_reg;
++		for (j = 0;  j< bank->nr_irqs; j++) {
++			gen_alloc_gc(bank->base_reg + j, j + irq_base, 32);
++		}
++	}
++
++	omap_irq_bank_init_one(bank);
++
+ 	domain = irq_domain_add_legacy(NULL, nr_irqs, irq_base, 0,
+ 				   &irq_domain_simple_ops, NULL);
+ 
+-	omap_irq_bank_init_one(bank);
+-	for (j = 0; j < bank->nr_irqs; j += 32)
+-		gen_alloc_gc(bank->base_reg + j, j + irq_base, 32);
+ 	early_print("allocate IRQ numbers:%d\n", bank->nr_irqs);
++
++	intc_bank_write_reg(0xfffffff, bank, INTC_MIR_SET0);
++	intc_bank_write_reg(0xfffffff, bank, INTC_MIR_SET0+0x20);
++	intc_bank_write_reg(0xfffffff, bank, INTC_MIR_SET0+0x40);
++	intc_bank_write_reg(0xfffffff, bank, INTC_MIR_SET0+0x60);
++}
++
++
++void newam335x_intc_handle_irq(struct pt_regs *regs)
++{
++	u32 irqnr;
++	void __iomem *base_addr;
++	struct gen_irq_bank *bank = irq_banks + 0;
++	base_addr =bank->base_reg;
++
++	do {
++		irqnr = __raw_readl(base_addr + 0x98);
++		if (irqnr)
++			goto out;
++
++		irqnr = __raw_readl(base_addr + 0xb8);
++		if (irqnr)
++			goto out;
++
++		irqnr = __raw_readl(base_addr + 0xd8);
++		if (irqnr)
++			goto out;
++
++		irqnr = __raw_readl(base_addr + 0xf8);
++out:
++		if (!irqnr)
++			break;
++
++		irqnr = readl_relaxed(base_addr + INTCPS_SIR_IRQ_OFFSET);
++		irqnr &= ACTIVEIRQ_MASK;
++		early_print("IRQ :%d \n", irqnr);
++		if (irqnr) {
++			irqnr = irq_find_mapping(domain, irqnr);
++			handle_IRQ(irqnr, regs);
++		}
++	} while (irqnr);
++}
++
++void test_irq(void)
++{
++	struct gen_irq_bank *bank = irq_banks + 0;
++	intc_bank_write_reg(0x04, bank, INTC_ISR_SET0);
+ }
+-- 
+1.9.1
+

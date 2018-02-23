@@ -1,0 +1,451 @@
+From 3c829b99de8c8d2de33e683a7e86f0c9cda6239a Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Tue, 15 Aug 2017 12:46:27 +0800
+Subject: [PATCH 15/34] newam335x:add base eth driver
+
+---
+ arch/arm/mach-newam335x/platform.c                 |  17 ++
+ drivers/net/ethernet/Kconfig                       |   1 +
+ drivers/net/ethernet/Makefile                      |   1 +
+ drivers/net/ethernet/newam335x/Kconfig             |   9 +
+ drivers/net/ethernet/newam335x/Makefile            |   2 +
+ .../net/ethernet/newam335x/newam335x_eth_cpsw.c    | 206 +++++++++++++++++++++
+ .../net/ethernet/newam335x/newam335x_eth_cpsw.h    | 138 ++++++++++++++
+ 7 files changed, 374 insertions(+)
+ create mode 100644 drivers/net/ethernet/newam335x/Kconfig
+ create mode 100644 drivers/net/ethernet/newam335x/Makefile
+ create mode 100644 drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
+ create mode 100644 drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
+
+diff --git a/arch/arm/mach-newam335x/platform.c b/arch/arm/mach-newam335x/platform.c
+index 0c208e8..94fd5d4 100644
+--- a/arch/arm/mach-newam335x/platform.c
++++ b/arch/arm/mach-newam335x/platform.c
+@@ -39,7 +39,24 @@
+ 	.resource	= newam335x_uart_resources,
+ };
+ 
++#define CPSW_SS_BASE  	(0x4a100000)
++static struct resource newam335x_eth_resources[] = {
++	{
++		.start	= CPSW_SS_BASE,
++		.end	= CPSW_SS_BASE + 0x4000,
++		.flags	= IORESOURCE_MEM,
++	},
++};
++
++static struct platform_device newam335x_eth_device = {
++	.name                   = "newam335x_eth_cpsw",
++	.id                     = 0,
++	.num_resources	= ARRAY_SIZE(newam335x_eth_resources),
++	.resource	= newam335x_eth_resources,
++};
++
+ void __init board_newam335x_init(void)
+ {
+ 	platform_device_register(&newam335x_uart_device);
++	platform_device_register(&newam335x_eth_device);
+ }
+diff --git a/drivers/net/ethernet/Kconfig b/drivers/net/ethernet/Kconfig
+index 8cc7467..d9908bb 100644
+--- a/drivers/net/ethernet/Kconfig
++++ b/drivers/net/ethernet/Kconfig
+@@ -40,6 +40,7 @@ source "drivers/net/ethernet/cavium/Kconfig"
+ source "drivers/net/ethernet/chelsio/Kconfig"
+ source "drivers/net/ethernet/cirrus/Kconfig"
+ source "drivers/net/ethernet/cisco/Kconfig"
++source "drivers/net/ethernet/newam335x/Kconfig"
+ 
+ config CX_ECAT
+ 	tristate "Beckhoff CX5020 EtherCAT master support"
+diff --git a/drivers/net/ethernet/Makefile b/drivers/net/ethernet/Makefile
+index a09423d..134e982 100644
+--- a/drivers/net/ethernet/Makefile
++++ b/drivers/net/ethernet/Makefile
+@@ -89,3 +89,4 @@ obj-$(CONFIG_NET_VENDOR_VIA) += via/
+ obj-$(CONFIG_NET_VENDOR_WIZNET) += wiznet/
+ obj-$(CONFIG_NET_VENDOR_XILINX) += xilinx/
+ obj-$(CONFIG_NET_VENDOR_XIRCOM) += xircom/
++obj-$(CONFIG_NET_VENDOR_NEWAM335X) += newam335x/
+diff --git a/drivers/net/ethernet/newam335x/Kconfig b/drivers/net/ethernet/newam335x/Kconfig
+new file mode 100644
+index 0000000..67e8054
+--- /dev/null
++++ b/drivers/net/ethernet/newam335x/Kconfig
+@@ -0,0 +1,9 @@
++
++config NET_VENDOR_NEWAM335X
++	bool "Texas Instruments (TI) devices"
++	default y
++
++config NEWAM335X_ETH_CPSW
++	tristate "NEWAM335X CPSW Switch Support"
++	depends on ARCH_NEWAM335X
++	select PHYLIB
+diff --git a/drivers/net/ethernet/newam335x/Makefile b/drivers/net/ethernet/newam335x/Makefile
+new file mode 100644
+index 0000000..61e4f72
+--- /dev/null
++++ b/drivers/net/ethernet/newam335x/Makefile
+@@ -0,0 +1,2 @@
++
++obj-$(CONFIG_NEWAM335X_ETH_CPSW) := newam335x_eth_cpsw.o
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
+new file mode 100644
+index 0000000..486e498
+--- /dev/null
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
+@@ -0,0 +1,206 @@
++#include <linux/kernel.h>
++#include <linux/io.h>
++#include <linux/clk.h>
++#include <linux/timer.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/irqreturn.h>
++#include <linux/interrupt.h>
++#include <linux/if_ether.h>
++#include <linux/etherdevice.h>
++#include <linux/netdevice.h>
++#include <linux/net_tstamp.h>
++#include <linux/skbuff.h>
++#include <linux/phy.h>
++#include <linux/workqueue.h>
++#include <linux/delay.h>
++#include <linux/pm_runtime.h>
++#include <linux/of.h>
++#include <linux/of_net.h>
++#include <linux/of_device.h>
++#include <linux/if_vlan.h>
++#include <linux/pinctrl/consumer.h>
++#include <linux/netdevice.h>
++#include <net/busy_poll.h>
++#include <linux/pinctrl/consumer.h>
++#include <linux/if_ether.h>
++#include <linux/delay.h>
++#include "newam335x_eth_cpsw.h"
++
++#define mac_hi(mac) (((mac)[0] << 0) | ((mac)[1] << 8) |    \
++	   ((mac)[2] << 16) | ((mac)[3] << 24))
++#define mac_lo(mac) (((mac)[4] << 0) | ((mac)[5] << 8))
++
++int gen_get_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
++{   
++  return 0;
++}   
++
++int gen_set_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
++{   
++  return 0;
++}   
++
++int gen_get_coalesce(struct net_device *netdev, struct ethtool_coalesce *cmd)
++{   
++  return 0;
++}   
++  
++int gen_set_coalesce(struct net_device *netdev, struct ethtool_coalesce *cls)
++{
++  return 0;
++}
++
++void gen_get_drvinfo(struct net_device *netdev, struct ethtool_drvinfo *info)
++{   
++}   
++
++void gen_get_ringparam(struct net_device *netdev,
++		   struct ethtool_ringparam *pra) 
++{
++}
++  
++int gen_set_ringparam(struct net_device *netdev,
++		   struct ethtool_ringparam *pra)
++{
++  return 0;
++}
++
++const struct ethtool_ops generic_netdev_tool = {
++  .get_link       = ethtool_op_get_link,
++  .get_settings   = gen_get_settings,
++  .set_settings   = gen_set_settings,
++  .set_coalesce   = gen_set_coalesce,
++  .get_coalesce   = gen_get_coalesce,
++  .get_drvinfo    = gen_get_drvinfo,
++  .get_ringparam  = gen_get_ringparam,
++  .set_ringparam  = gen_set_ringparam,
++};
++
++static int cpsw_ndo_open(struct net_device *ndev)
++{
++	return 0;
++}
++
++static int cpsw_ndo_stop(struct net_device *ndev)
++{
++	return 0;
++}
++
++static int cpsw_ndo_start_xmit (struct sk_buff *skb,
++                           struct net_device *ndev)
++{
++    return NETDEV_TX_OK;
++}
++
++static int generic_ndo_set_mac_address(struct net_device *ndev,
++                               void *addr)
++{
++    return 0;
++}
++  
++static int cpsw_ndo_ioctl(struct net_device *dev,
++                            struct ifreq *ifr, int cmd)
++{
++    return 0;
++}
++
++static void cpsw_ndo_tx_timeout(struct net_device *ndev)
++{
++}
++  
++static void cpsw_ndo_set_rx_mode(struct net_device *ndev)
++{
++}
++  
++static int cpsw_ndo_vlan_rx_add_vid(struct net_device *ndev,
++                               __be16 proto, u16 vid)
++{
++      return 0;
++}
++  
++static int cpsw_ndo_vlan_rx_kill_vid(struct net_device *ndev,
++                       __be16 proto, u16 vid)
++{
++     return 0;
++}
++
++
++static const struct net_device_ops cpsw_netdev_ops = {
++	.ndo_open       = cpsw_ndo_open,
++	.ndo_stop       = cpsw_ndo_stop,
++	.ndo_start_xmit     = cpsw_ndo_start_xmit,
++	.ndo_set_mac_address    = generic_ndo_set_mac_address,
++	.ndo_do_ioctl       = cpsw_ndo_ioctl,
++	.ndo_validate_addr  = eth_validate_addr,
++	//.ndo_change_mtu       = eth_change_mtu,
++	.ndo_tx_timeout     = cpsw_ndo_tx_timeout,
++	.ndo_set_rx_mode    = cpsw_ndo_set_rx_mode,
++	.ndo_vlan_rx_add_vid    = cpsw_ndo_vlan_rx_add_vid,
++	.ndo_vlan_rx_kill_vid   = cpsw_ndo_vlan_rx_kill_vid,
++};
++
++static int newam335x_eth_probe(struct platform_device *pdev)
++{
++	struct resource *res;
++	struct newam335x_eth_priv *priv;
++	void __iomem *base;
++	printk("zz %s %d \n", __func__, __LINE__);
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (!res) {
++		dev_err(&pdev->dev, "resource not find");
++		goto error;
++	}
++
++	priv = kmalloc(sizeof(struct newam335x_eth_priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	base = ioremap(res->start, res->end-res->start);
++	if (!base) {
++		kfree(priv);
++		return -EINVAL;
++	}
++
++#define CPSW_SL1_OFFSET 		0xd80
++#define CPSW_SL2_OFFSET 		0xdc0
++#define CPSW_PORT_OFFSET  		0x100
++#define CPSW_ALE_OFFSET   		0xd00
++#define CPSW_CPDMA_OFFSET 		0x800
++	priv->ss_regs = base;
++	priv->sl1_regs = (struct cpsw_sl_regs *) CPSW_SL1_OFFSET;
++	priv->sl2_regs = (struct cpsw_sl_regs *) CPSW_SL2_OFFSET;
++	priv->port0_regs =(struct cpsw_port0_regs *) CPSW_PORT_OFFSET+0x08;
++	priv->port1_regs =(struct cpsw_port1_regs *) CPSW_PORT_OFFSET+0x108;
++	priv->port2_regs =(struct cpsw_port1_regs *) CPSW_PORT_OFFSET+0x208;
++	priv->ale_regs = (void*)CPSW_ALE_OFFSET;
++	priv->dma_regs = (void*)CPSW_CPDMA_OFFSET;
++
++	return 0;
++
++error:
++	return 0;
++}
++
++static int newam335x_eth_remove(struct platform_device *pdev)
++{
++  return 0;
++}
++
++static struct platform_driver newam335x_eth_driver = {
++  .driver = {
++	  .name    = "newam335x_eth_cpsw",
++	  .owner   = THIS_MODULE,
++	  //.pm    = &cpsw_pm_ops,
++	  //.of_match_table = cpsw_of_mtable,
++  },
++  .probe = newam335x_eth_probe,
++  .remove = newam335x_eth_remove,
++};
++
++module_platform_driver(newam335x_eth_driver);
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Cyril Chemparathy <cyril@ti.com>");
++MODULE_AUTHOR("Mugunthan V N <mugunthanvnm@ti.com>");
++MODULE_DESCRIPTION("TI CPSW Ethernet driver");
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
+new file mode 100644
+index 0000000..1dc7530
+--- /dev/null
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
+@@ -0,0 +1,138 @@
++#ifndef __NEWAM335X_ETH_CPSW_H__
++#define __NEWAM335X_ETH_CPSW_H__
++
++struct newam335x_mdio_regs {
++	u32	version;
++	u32	control;
++	u32	alive;
++	u32	link;
++	u32	linkintraw;
++	u32	linkintmasked;
++	u32	__reserved_0[2];
++	u32	userintraw;
++	u32	userintmasked;
++	u32	userintmaskset;
++	u32	userintmaskclr;
++	u32	__reserved_1[20];
++
++	struct {
++		u32		access;
++		u32		physel;
++	} user[0];
++};
++
++struct cpsw_ss_regs {
++	u32	id_ver;
++	u32	control;
++	u32	soft_reset;
++	u32	stat_port_en;
++	u32	ptype;
++};
++
++struct cpsw_port1_regs {
++	u32	max_blks;
++	u32	blk_cnt;
++	u32	flow_thresh;
++	u32	port_vlan;
++	u32	tx_pri_map;
++	u32	gap_thresh;
++	u32	sa_lo;
++	u32	sa_hi;
++};
++
++struct cpsw_port0_regs {
++	u32	max_blks;
++	u32	blk_cnt;
++	u32	flow_thresh;
++	u32	port_vlan;
++	u32	tx_pri_map;
++	u32	cpdma_tx_pri_map;
++	u32	cpdma_rx_chan_map;
++};
++
++struct cpsw_sl_regs {
++	u32	id_ver;
++	u32	mac_control;
++	u32	mac_status;
++	u32	soft_reset;
++	u32	rx_maxlen;
++	u32	__reserved_0;
++	u32	rx_pause;
++	u32	tx_pause;
++	u32	__reserved_1;
++	u32	rx_pri_map;
++};
++
++struct cpdma_desc {
++	/* hardware fields */
++	u32			hw_next;
++	u32			hw_buffer;
++	u32			hw_len;
++	u32			hw_mode;
++	/* software fields */
++	u32			sw_buffer;
++	u32			sw_len;
++};
++
++struct cpdma_chan {
++	struct cpdma_desc	*head, *tail;
++	void			*hdp, *cp, *rxfree;
++};
++
++struct cpsw_hw_stats {
++	u32	rxgoodframes;
++	u32	rxbroadcastframes;
++	u32	rxmulticastframes;
++	u32	rxpauseframes;
++	u32	rxcrcerrors;
++	u32	rxaligncodeerrors;
++	u32	rxoversizedframes;
++	u32	rxjabberframes;
++	u32	rxundersizedframes;
++	u32	rxfragments;
++	u32	__pad_0[2];
++	u32	rxoctets;
++	u32	txgoodframes;
++	u32	txbroadcastframes;
++	u32	txmulticastframes;
++	u32	txpauseframes;
++	u32	txdeferredframes;
++	u32	txcollisionframes;
++	u32	txsinglecollframes;
++	u32	txmultcollframes;
++	u32	txexcessivecollisions;
++	u32	txlatecollisions;
++	u32	txunderrun;
++	u32	txcarriersenseerrors;
++	u32	txoctets;
++	u32	octetframes64;
++	u32	octetframes65t127;
++	u32	octetframes128t255;
++	u32	octetframes256t511;
++	u32	octetframes512t1023;
++	u32	octetframes1024tup;
++	u32	netoctets;
++	u32	rxsofoverruns;
++	u32	rxmofoverruns;
++	u32	rxdmaoverruns;
++};
++
++struct newam335x_eth_priv {
++	struct net_device	*dev;
++	struct mii_dev *bus;
++	struct phy_device *phydev;
++	int phyaddr;
++	int phytype;
++	struct cpsw_ss_regs *ss_regs;
++	struct cpsw_sl_regs *sl1_regs;
++	struct cpsw_sl_regs *sl2_regs;
++	struct cpsw_port0_regs *port0_regs;
++	struct cpsw_port1_regs *port1_regs;
++	struct cpsw_port1_regs *port2_regs;
++	void *ale_regs;
++	void *dma_regs;
++	struct cpdma_desc *descs;
++	struct cpdma_desc		*desc_free;
++	struct cpdma_chan		rx_chan, tx_chan;
++};
++#endif /* ifndef __NEWAM335X_ETH_CPSW_H__ */
+-- 
+1.9.1
+

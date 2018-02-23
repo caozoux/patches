@@ -1,0 +1,500 @@
+From fbf6dc8a3c1075a7ba5938889b1e3a09b8a7b36d Mon Sep 17 00:00:00 2001
+From: zou cao <cao.zou@windriver.com>
+Date: Tue, 29 Aug 2017 16:25:01 +0800
+Subject: [PATCH 26/34] newam335x:mdio: add mdio bus and eth phy
+
+---
+ arch/arm/mach-newam335x/platform.c                 |  19 +-
+ .../net/ethernet/newam335x/newam335x_eth_cpsw.c    |  48 +++--
+ .../net/ethernet/newam335x/newam335x_eth_cpsw.h    |  22 ---
+ drivers/net/ethernet/newam335x/newam335x_mdio.c    | 216 +++++++++++++++------
+ drivers/net/ethernet/newam335x/newam335x_mdio.h    |   8 -
+ 5 files changed, 213 insertions(+), 100 deletions(-)
+
+diff --git a/arch/arm/mach-newam335x/platform.c b/arch/arm/mach-newam335x/platform.c
+index 0c2f029..3fbc72d 100644
+--- a/arch/arm/mach-newam335x/platform.c
++++ b/arch/arm/mach-newam335x/platform.c
+@@ -55,11 +55,27 @@
+ 
+ static struct platform_device newam335x_eth_device = {
+ 	.name                   = "newam335x_eth_cpsw",
+-	.id                     = 0,
++	.id                     = -1,
+ 	.num_resources	= ARRAY_SIZE(newam335x_eth_resources),
+ 	.resource	= newam335x_eth_resources,
+ };
+ 
++#define CPSW_MDIO_BASE  	(0x4A101000)
++static struct resource newam335x_mdio_resources[] = {
++	{
++		.start	= CPSW_MDIO_BASE,
++		.end	= CPSW_MDIO_BASE + 0x100,
++		.flags	= IORESOURCE_MEM,
++	},
++};
++
++static struct platform_device newam335x_mdio_device = {
++	.name                   = "newam335x_mdio",
++	.id                     = -1,
++	.num_resources	= ARRAY_SIZE(newam335x_mdio_resources),
++	.resource	= newam335x_mdio_resources,
++};
++
+ void __init board_newam335x_init(void)
+ {
+ 	int hw_irq, irq;
+@@ -71,5 +87,6 @@ void __init board_newam335x_init(void)
+ 	newam335x_eth_resources[1].start = irq;
+ 	platform_device_register(&newam335x_uart_device);
+ 
++	platform_device_register(&newam335x_mdio_device);
+ 	platform_device_register(&newam335x_eth_device);
+ }
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
+index 6c37563..8914f06 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
+@@ -28,7 +28,6 @@
+ #include <linux/list.h>
+ #include "newam335x_eth_cpsw.h"
+ #include "newam335x_eth_cpdam.h"
+-#include "newam335x_mdio.h"
+ #include "ale.h"
+ 
+ #define CPSW_MAX_PACKET_SIZE	(1500 + 14 + 4 + 4)
+@@ -156,7 +155,7 @@ static void newam335x_interrupt_init(struct newam335x_eth_priv *priv)
+ 	struct cpsw_wr_regs *wr_regs = priv->wr_regs;
+ 	u32 val;
+ 
+-	setbit_and_wait_for_clear32(&wr_regs->soft_reset);
++	//setbit_and_wait_for_clear32(&wr_regs->soft_reset);
+ 
+ 	/*enable dma chanle 0 interrupt*/
+ 	__raw_writel(0x1, &wr_regs->rx_en);
+@@ -170,8 +169,6 @@ static int newam335x_eth_init(struct net_device *ndev)
+ 	u32 val;
+ 	struct newam335x_eth_priv *priv = (struct newam335x_eth_priv *) netdev_priv(ndev);
+ 
+-	printk("zz %s %d \n", __func__, __LINE__);
+-
+ 	setbit_and_wait_for_clear32(&priv->ss_regs->soft_reset);
+ 
+ 	//writel(readl(&priv->ale_regs+CPSW_ALE_CONTROL) & ~(1<<2),
+@@ -204,7 +201,6 @@ static int newam335x_eth_init(struct net_device *ndev)
+ 	newam335x_interrupt_init(priv);
+ 
+ 	queue_rx_packages(priv);
+-	cpdma_enable(priv, true);
+ #if 0
+ 	newam335x_phy_init(dev);
+ 	phy_startup(priv->phydev);
+@@ -213,10 +209,45 @@ static int newam335x_eth_init(struct net_device *ndev)
+ 	return 0;
+ }
+ 
++
++static void eth_adjust_link(struct net_device *ndev)
++{
++	struct newam335x_eth_priv *priv = (struct newam335x_eth_priv *) netdev_priv(ndev);
++	struct phy_device *phydev = priv->phydev;
++
++	if (phydev->link) {
++		netif_carrier_on(ndev);
++		cpdma_enable(priv, true);
++	} else {
++
++	}
++}
++
+ static int cpsw_ndo_open(struct net_device *ndev)
+ {
++	struct newam335x_eth_priv *priv = (struct newam335x_eth_priv *) netdev_priv(ndev);
++	struct phy_device *phydev;
++	char phy_id[MII_BUS_ID_SIZE + 3];
++
+ 	printk("zz %s %d \n", __func__, __LINE__);
++
+ 	newam335x_eth_init(ndev);
++
++	snprintf(phy_id, sizeof(phy_id), PHY_ID_FMT,
++		 "newam335x_mdio", 0);
++	phydev = phy_connect(ndev, phy_id, eth_adjust_link,
++	 			PHY_INTERFACE_MODE_MII);
++
++	if (IS_ERR(phydev)) {
++		netdev_err(ndev, "Can not get phy\n");
++		return 1;
++	}
++
++	netif_carrier_off(ndev);
++	ndev->phydev = phydev;
++	priv->phydev = phydev;
++	phy_start(ndev->phydev);
++
+ 	return 0;
+ }
+ 
+@@ -524,7 +555,6 @@ static int newam335x_eth_probe(struct platform_device *pdev)
+ 	priv->port0_regs =(struct cpsw_port0_regs *) (base+CPSW_PORT_OFFSET+0x08);
+ 	priv->port1_regs =(struct cpsw_port1_regs *) (base+CPSW_PORT_OFFSET+0x108);
+ 	priv->port2_regs =(struct cpsw_port1_regs *) (base+CPSW_PORT_OFFSET+0x208);
+-	priv->mdio_regs =(struct cpsw_port1_regs *) (base+CPSW_MDIO_OFFSET);
+ 	priv->ale_regs = (void*) base+CPSW_ALE_OFFSET;
+ 	priv->dma_regs = (void*) base+CPSW_CPDMA_OFFSET;
+ 
+@@ -543,12 +573,6 @@ static int newam335x_eth_probe(struct platform_device *pdev)
+ 		list_add_tail(&priv->package_list[i].head, &priv->free_list);
+ 	}
+ 
+-	ret = newam335x_mdio_init(priv);
+-	if (ret) {
+-		dev_err(&priv->pdev, "mdio init failed\n");
+-		goto error1;
+-	}
+-
+ 	ndev->features |= NETIF_F_HW_VLAN_CTAG_FILTER;
+ 	ndev->netdev_ops = &newam335x_netdev_ops;
+ 	ndev->ethtool_ops = &newam335x_netdev_tool;
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
+index 28ba051..a2b3e5e 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
+@@ -2,26 +2,6 @@
+ #define __NEWAM335X_ETH_CPSW_H__
+ #include <linux/inetdevice.h>
+ 
+-struct newam335x_mdio_regs {
+-	u32	version;
+-	u32	control;
+-	u32	alive;
+-	u32	link;
+-	u32	linkintraw;
+-	u32	linkintmasked;
+-	u32	__reserved_0[2];
+-	u32	userintraw;
+-	u32	userintmasked;
+-	u32	userintmaskset;
+-	u32	userintmaskclr;
+-	u32	__reserved_1[20];
+-
+-	struct {
+-		u32		access;
+-		u32		physel;
+-	} user[0];
+-};
+-
+ struct cpsw_ss_regs {
+ 	u32	id_ver;
+ 	u32	control;
+@@ -150,8 +130,6 @@ struct transfer_data {
+ struct newam335x_eth_priv {
+ 	struct platform_device *pdev;
+ 	struct net_device	*ndev;
+-	struct mii_dev *bus;
+-	struct mii_bus *mdio_bus;
+ 	struct phy_device *phydev;
+ 	int phyaddr;
+ 	int phytype;
+diff --git a/drivers/net/ethernet/newam335x/newam335x_mdio.c b/drivers/net/ethernet/newam335x/newam335x_mdio.c
+index 7e6de03..04bbdce 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_mdio.c
++++ b/drivers/net/ethernet/newam335x/newam335x_mdio.c
+@@ -8,84 +8,134 @@
+ #include "newam335x_eth_cpsw.h"
+ #include "newam335x_mdio.h"
+ 
+-static int newam335x_mdio_read(struct mii_bus *bus, int phy_id, int phy_reg)
++struct newam335x_mdio_regs {
++	u32	version;
++	u32	control;
++	u32	alive;
++	u32	link;
++	u32	linkintraw;
++	u32	linkintmasked;
++	u32	__reserved_0[2];
++	u32	userintraw;
++	u32	userintmasked;
++	u32	userintmaskset;
++	u32	userintmaskclr;
++	u32	__reserved_1[20];
++
++	struct {
++		u32		access;
++		u32		physel;
++	} user[0];
++};
++
++struct newam335x_mdio_priv
+ {
++	struct mii_bus * mdio_bus;
++	struct newam335x_mdio_regs *mdio_regs;
++	struct platform_device *pdev;
++	struct device *dev;
++};
++
+ #define MDIO_REGADDR_MASK (0x1f<<21)
+ #define MDIO_PHYADDR_MASK (0x1f<<16)
+ #define MDIO_REGADDR(val) ((val&0x1f)<<21)
+ #define MDIO_PHYADDR(val) ((val&0x1f)<<16)
+ #define MDIO_DATA(val) ((val&0xffff))
+ #define MDIO_ACTIVE (1<<29)
++#define MDIO_ACK		BIT(29)
+ #define MDIO_GO     (1<<31)
+ #define MDIO_WR     (1<<30)
++#define CONTROL_IDLE		BIT(31)
++#define MDIO_DATA		(0xffff)
+ 
+-	struct newam335x_eth_priv *priv = bus->priv;
+-	struct newam335x_mdio_regs *mdio_regs = priv->mdio_regs;
+-	u32 val;
+-	unsigned long start;
++/* wait until hardware is ready for another user access */
++static inline int wait_for_user_access(struct newam335x_mdio_priv *priv)
++{
++	unsigned long timeout = jiffies + 2*HZ;
++	u32 reg;
+ 
+-	val =readl(&mdio_regs->user[0].access);
+-	val &= ~(MDIO_ACTIVE|MDIO_GO);
+-	writel(val, &mdio_regs->user[0].access);
++	while (time_after(timeout, jiffies)) {
+ 
+-	val &= ~(MDIO_PHYADDR_MASK | MDIO_REGADDR_MASK);
+-	val |= (MDIO_REGADDR(phy_reg) | MDIO_PHYADDR(phy_id));
+-	writel(val, &mdio_regs->user[0].access);
+-	val |= MDIO_GO;
+-	writel(val, &mdio_regs->user[0].access);
+-	
+-	val =readl(&mdio_regs->user[0].access);
+-	start = jiffies + 2*HZ;
+-	
+-	while((val&MDIO_GO)) {
+-		if (time_after(jiffies, start)) {
+-			printk("zz %s phy_id:%08x phy_reg:%08x val:%08x\n",__func__, phy_id, phy_reg, readl(&mdio_regs->user[0].access));
+-			printk("Error: mdio read error\n");
++		reg = __raw_readl(&priv->mdio_regs->user[0].access);
++
++		if ((reg & MDIO_GO) == 0)
+ 			return 0;
+-		}
+-		val =readl(&mdio_regs->user[0].access);
+-		msleep(1);
++
++		reg = __raw_readl(&priv->mdio_regs->control);
++		if ((reg & CONTROL_IDLE) == 0)
++			continue;
++
++		/*
++		 * An emac soft_reset may have clobbered the mdio controller's
++		 * state machine.  We need to reset and retry the current
++		 * operation
++		 */
++		//dev_warn(priv->dev, "resetting idled controller\n");
++		//__newam335x_mdio_reset(data);
++		//return -EAGAIN;
+ 	}
+-	//printk("zz %s phy_id:%08x phy_reg:%08x val:%08x\n",__func__, phy_id, phy_reg, readl(&mdio_regs->user[0].access));
+-	return MDIO_DATA(val);
++
++	reg = __raw_readl(&priv->mdio_regs->user[0].access);
++	if ((reg & MDIO_GO) == 0)
++		return 0;
++
++	dev_err(priv->dev, "timed out waiting for user access\n");
++	return -ETIMEDOUT;
++}
++
++static int newam335x_mdio_read(struct mii_bus *bus, int phy_id, int phy_reg)
++{
++
++	struct newam335x_mdio_priv *priv = bus->priv;
++	struct newam335x_mdio_regs *mdio_regs = priv->mdio_regs;
++	u32 val, ret;
++	unsigned long start;
++
++	val = (MDIO_GO | (phy_reg << 21) |
++	       (phy_id << 16));
++
++	ret = wait_for_user_access(priv);
++	if (ret)
++		return -EINVAL;
++
++	__raw_writel(val, &mdio_regs->user[0].access);
++
++	ret = wait_for_user_access(priv);
++	if (ret)
++		return -EINVAL;
++
++	val = __raw_readl(&mdio_regs->user[0].access);
++	val = (val & MDIO_ACK) ? (val & MDIO_DATA) : -EIO;
++
++	dev_dbg(priv->dev, "read phy_id:%08x phy_reg:%08x val:%08x \n",phy_id, phy_reg, val);
++	return val;
+ }
+ 
+ static int newam335x_mdio_write(struct mii_bus *bus, int phy_id, int phy_reg, u16 phy_data)
+ {
+-	struct newam335x_eth_priv *priv = bus->priv;
++	struct newam335x_mdio_priv *priv = bus->priv;
+ 	struct newam335x_mdio_regs *mdio_regs = priv->mdio_regs;
+ 	unsigned long start;
+-	u32 val;
++	u32 val, ret;
+ 
++	val = (MDIO_GO | MDIO_WR | (phy_reg << 21) |
++	       (phy_id << 16) | (phy_data&MDIO_DATA));
++	
++	ret = wait_for_user_access(priv);
++	if (ret)
++		return -EINVAL;
+ 
+-	val =readl(&mdio_regs->user[0].access);
+-	val &= ~(MDIO_ACTIVE|MDIO_GO);
+ 	writel(val, &mdio_regs->user[0].access);
+ 
+-	val &= ~(MDIO_PHYADDR_MASK | MDIO_REGADDR_MASK);
+-	val |= (MDIO_REGADDR(phy_reg) | MDIO_PHYADDR(phy_id));
+-	val |= phy_data | MDIO_WR;
+-	writel(val, &mdio_regs->user[0].access);
+-	val |= MDIO_GO;
+-	writel(val, &mdio_regs->user[0].access);
++	ret = wait_for_user_access(priv);
++	if (ret)
++		return -EINVAL;
+ 	
+-	start = jiffies + 10*HZ;
+-	val =readl(&mdio_regs->user[0].access);
+-	
+-	while((val&MDIO_GO)) {
+-		if (time_after(jiffies, start)) {
+-			printk("Error: mdio read error\n");
+-			return 0;
+-		}
+-		val =readl(&mdio_regs->user[0].access);
+-		msleep(1);
+-	}
+-	
+-	printk("zz %s phy_id:%08x phy_reg:%08x val:%08x\n",__func__, phy_id, phy_reg, readl(&mdio_regs->user[0].access));
++	dev_dbg(priv->dev, "write phy_id:%08x phy_reg:%08x val:%08x \n",phy_id, phy_reg, val);
+ 	return 0;
+ }
+ 
+-static void hw_mdio_init(struct newam335x_eth_priv *priv)
++static void hw_mdio_init(struct newam335x_mdio_priv *priv)
+ {
+ #define MDIO_STATE_ENABLE 	(1<<30)
+ #define MDIO_PREAMBLE  	  	(1<<20)
+@@ -100,37 +150,89 @@ static void hw_mdio_init(struct newam335x_eth_priv *priv)
+ 	writel(val, &mdio_regs->control);
+ }
+ 
+-int newam335x_mdio_init(struct newam335x_eth_priv *priv)
++static int newam335x_mdio_probe(struct platform_device *pdev)
+ {
++	struct resource *res;
++	struct newam335x_mdio_priv *priv;
++	void __iomem *base;
+ 	int ret;
+ 
++	priv = kzalloc(sizeof(struct newam335x_mdio_priv), GFP_KERNEL);
++
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (!res) {
++		dev_err(&pdev->dev, "resource not find");
++		goto error;
++	}
++
++	base = ioremap(res->start, res->end - res->start);
++	if (!base) {
++		kfree(priv);
++		return -EINVAL;
++	}
++
++	priv->mdio_regs = (struct newam335x_mdio_regs*) base;
++	priv->pdev = pdev;
++	priv->dev = &pdev->dev;
++	platform_set_drvdata(pdev, priv);
++
+ 	priv->mdio_bus = mdiobus_alloc();
+ 	if (priv->mdio_bus == NULL)
+ 		return -ENOMEM;
+ 
+ 	priv->mdio_bus->name     = "newam335x mdio bus";
+-	snprintf(priv->mdio_bus->id, MII_BUS_ID_SIZE, "%s-%d",
+-		priv->pdev->name, priv->pdev->id);
++	snprintf(priv->mdio_bus->id, MII_BUS_ID_SIZE, "%s",
++		priv->pdev->name);
+ 	priv->mdio_bus->priv     = priv;
+-	priv->mdio_bus->parent   = &priv->pdev->dev;
++	priv->mdio_bus->parent   = &pdev->dev;
+ 	priv->mdio_bus->read     = &newam335x_mdio_read;
+ 	priv->mdio_bus->write    = &newam335x_mdio_write;
+-	priv->mdio_bus->parent = &priv->pdev->dev;
+-	priv->mdio_bus->phy_mask = ~(3);
++	priv->mdio_bus->parent = &pdev->dev;
++	priv->mdio_bus->phy_mask = ~(1);
+ 
+ 	ret = mdiobus_register(priv->mdio_bus);
+ 	if (ret) {
+ 		return -ENOENT;
+ 	}
+ 
++	dev_info(&priv->mdio_bus->dev, "register\n");
+ 	return 0;
++error:
++	kfree(priv);
++	return 1;
+ }
+ 
+-void newam335x_mdio_exit(struct newam335x_eth_priv *priv)
++static int newam335x_mdio_remove(struct platform_device *pdev)
+ {
++	struct newam335x_mdio_priv *priv;
++	priv = platform_get_drvdata(pdev);
+ 	if (priv->mdio_bus) {
+ 		mdiobus_unregister(priv->mdio_bus);
+ 		mdiobus_free(priv->mdio_bus);
++		kfree(priv);
+ 	}
++	return 0;
++}
++
++static struct platform_driver newam335x_mdio_driver = {
++	.driver = {
++		.name	 = "newam335x_mdio",
++	},
++	.probe = newam335x_mdio_probe,
++	.remove = newam335x_mdio_remove,
++};
++
++static int __init newam335x_mdio_init(void)
++{
++	return platform_driver_register(&newam335x_mdio_driver);
++}
++device_initcall(newam335x_mdio_init);
++
++static void __exit newam335x_mdio_exit(void)
++{
++	platform_driver_unregister(&newam335x_mdio_driver);
+ }
++module_exit(newam335x_mdio_exit);
+ 
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("newam335x MDIO driver");
+diff --git a/drivers/net/ethernet/newam335x/newam335x_mdio.h b/drivers/net/ethernet/newam335x/newam335x_mdio.h
+index e7b5d79..e69de29 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_mdio.h
++++ b/drivers/net/ethernet/newam335x/newam335x_mdio.h
+@@ -1,8 +0,0 @@
+-#ifndef __NEW_AM335X_MDIO_H__
+-#define __NEW_AM335X_MDIO_H__
+-
+-int newam335x_mdio_init(struct newam335x_eth_priv *priv);
+-void newam335x_mdio_exit(struct newam335x_eth_priv *priv);
+-
+-#endif /* ifndef __NEW_AM335X_MDIO_H__ */
+-
+-- 
+1.9.1
+

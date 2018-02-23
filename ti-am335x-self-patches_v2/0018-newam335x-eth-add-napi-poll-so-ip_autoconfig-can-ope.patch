@@ -1,0 +1,242 @@
+From b7d7130d862551de597675ee3c0c5654760e766b Mon Sep 17 00:00:00 2001
+From: zou cao <cao.zou@windriver.com>
+Date: Fri, 18 Aug 2017 17:37:32 +0800
+Subject: [PATCH 18/34] newam335x:eth: add napi poll, so ip_autoconfig can open
+ the ether dev
+
+---
+ .../net/ethernet/newam335x/newam335x_eth_cpsw.c    | 70 ++++++++++++++++++----
+ .../net/ethernet/newam335x/newam335x_eth_cpsw.h    |  3 +
+ 2 files changed, 61 insertions(+), 12 deletions(-)
+
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
+index fe4d3b0..d51f6b9 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
+@@ -30,6 +30,7 @@
+ #include "newam335x_eth_cpdam.h"
+ #include "ale.h"
+ 
++#define POLL_WEIGHT (64)
+ #define NEWAM335X_CPSW_MAX_QUEUES 8
+ #define PKT_MAX			(1500 + 14 + 4 + 4)
+ #define mac_hi(mac) (((mac)[0] << 0) | ((mac)[1] << 8) |    \
+@@ -38,40 +39,47 @@
+ 
+ int gen_get_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
+ {   
++	printk("zz %s %d \n", __func__, __LINE__);
+   return 0;
+ }   
+ 
+ int gen_set_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
+ {   
++	printk("zz %s %d \n", __func__, __LINE__);
+   return 0;
+ }   
+ 
+ int gen_get_coalesce(struct net_device *netdev, struct ethtool_coalesce *cmd)
+ {   
++	printk("zz %s %d \n", __func__, __LINE__);
+   return 0;
+ }   
+   
+ int gen_set_coalesce(struct net_device *netdev, struct ethtool_coalesce *cls)
+ {
++	printk("zz %s %d \n", __func__, __LINE__);
+   return 0;
+ }
+ 
+ void gen_get_drvinfo(struct net_device *netdev, struct ethtool_drvinfo *info)
+ {   
++	printk("zz %s %d \n", __func__, __LINE__);
+ }   
+ 
+ void gen_get_ringparam(struct net_device *netdev,
+ 		   struct ethtool_ringparam *pra) 
+ {
++	printk("zz %s %d \n", __func__, __LINE__);
+ }
+   
+ int gen_set_ringparam(struct net_device *netdev,
+ 		   struct ethtool_ringparam *pra)
+ {
++	printk("zz %s %d \n", __func__, __LINE__);
+   return 0;
+ }
+ 
+-const struct ethtool_ops generic_netdev_tool = {
++const struct ethtool_ops newam335x_netdev_tool = {
+   .get_link       = ethtool_op_get_link,
+   .get_settings   = gen_get_settings,
+   .set_settings   = gen_set_settings,
+@@ -180,55 +188,63 @@ static int newam335x_eth_init(struct net_device *ndev)
+ 
+ static int cpsw_ndo_open(struct net_device *ndev)
+ {
+-	newam335x_eth_init(ndev);
+ 	printk("zz %s %d \n", __func__, __LINE__);
++	newam335x_eth_init(ndev);
+ 	return 0;
+ }
+ 
+ static int cpsw_ndo_stop(struct net_device *ndev)
+ {
++	printk("zz %s %d \n", __func__, __LINE__);
+ 	return 0;
+ }
+ 
+ static int cpsw_ndo_start_xmit (struct sk_buff *skb,
+                            struct net_device *ndev)
+ {
++	printk("zz %s %d \n", __func__, __LINE__);
+     return NETDEV_TX_OK;
+ }
+ 
+ static int generic_ndo_set_mac_address(struct net_device *ndev,
+                                void *addr)
+ {
++	printk("zz %s %d \n", __func__, __LINE__);
+     return 0;
+ }
+   
+ static int cpsw_ndo_ioctl(struct net_device *dev,
+                             struct ifreq *ifr, int cmd)
+ {
++	printk("zz %s %d \n", __func__, __LINE__);
+     return 0;
+ }
+ 
+ static void cpsw_ndo_tx_timeout(struct net_device *ndev)
+ {
++	printk("zz %s %d \n", __func__, __LINE__);
+ }
+   
+ static void cpsw_ndo_set_rx_mode(struct net_device *ndev)
+ {
++	printk("zz %s %d \n", __func__, __LINE__);
+ }
+   
+ static int cpsw_ndo_vlan_rx_add_vid(struct net_device *ndev,
+                                __be16 proto, u16 vid)
+ {
++	printk("zz %s %d \n", __func__, __LINE__);
+       return 0;
+ }
+   
+ static int cpsw_ndo_vlan_rx_kill_vid(struct net_device *ndev,
+                        __be16 proto, u16 vid)
+ {
++	printk("zz %s %d \n", __func__, __LINE__);
+      return 0;
+ }
+ 
+-static const struct net_device_ops cpsw_netdev_ops = {
++static const struct net_device_ops newam335x_netdev_ops = {
+ 	.ndo_open       = cpsw_ndo_open,
+ 	.ndo_stop       = cpsw_ndo_stop,
+ 	.ndo_start_xmit     = cpsw_ndo_start_xmit,
+@@ -242,27 +258,34 @@ static int cpsw_ndo_vlan_rx_kill_vid(struct net_device *ndev,
+ 	.ndo_vlan_rx_kill_vid   = cpsw_ndo_vlan_rx_kill_vid,
+ };
+ 
++static int eth_rx_poll(struct napi_struct *napi_rx, int budget)
++{
++	return 0;
++}
++
++static int eth_tx_poll(struct napi_struct *napi_tx, int budget)
++{
++	return 0;
++}
++
+ static int newam335x_eth_probe(struct platform_device *pdev)
+ {
+ 	struct resource *res;
+ 	struct newam335x_eth_priv *priv;
+ 	struct net_device		*ndev;
+-	int i;
++	int i, ret;
+ 	void __iomem *base;
+-	printk("zz %s %d \n", __func__, __LINE__);
+ 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+ 	if (!res) {
+ 		dev_err(&pdev->dev, "resource not find");
+ 		goto error;
+ 	}
+ 
+-	ndev = alloc_etherdev_mq(sizeof(struct newam335x_eth_priv), NEWAM335X_CPSW_MAX_QUEUES);
++	//ndev = alloc_etherdev_mq(sizeof(struct newam335x_eth_priv), NEWAM335X_CPSW_MAX_QUEUES);
++	ndev = alloc_etherdev(sizeof(struct newam335x_eth_priv));
+ 	priv = netdev_priv(ndev);
+ 	priv->ndev = ndev;
+-	priv->dev  = &ndev->dev;
+-	priv = kmalloc(sizeof(struct newam335x_eth_priv), GFP_KERNEL);
+-	if (!priv)
+-		return -ENOMEM;
++	//priv->dev  = &ndev->dev;
+ 
+ 	platform_set_drvdata(pdev, ndev);
+ 
+@@ -293,13 +316,36 @@ static int newam335x_eth_probe(struct platform_device *pdev)
+ 	priv->desc_free = &priv->desc[0];
+ 
+ 	for (i = 0; i < PACKAGE_NUM; ++i) {
+-		priv->package_list[i].buffer = kmalloc(2028, GFP_DMA);
+-		if (priv->package_list[i].buffer)
++		//priv->package_list[i].buffer = kmalloc(2028, GFP_DMA);
++		priv->package_list[i].buffer = kmalloc(2048, GFP_KERNEL);
++		if (!priv->package_list[i].buffer) {
++			dev_err(&pdev->dev, "mem failed error\n");
+ 			goto error1;
++		}
+ 		priv->package_list[i].desc= &priv->desc[i];
+ 		list_add_tail(&priv->package_list[i].head, &priv->free_list);
+ 	}
+ 
++	ndev->features |= NETIF_F_HW_VLAN_CTAG_FILTER;
++	ndev->netdev_ops = &newam335x_netdev_ops;
++	ndev->ethtool_ops = &newam335x_netdev_tool;
++
++	//memcpy(ndev->dev_addr, priv->defaut_mac, ETH_ALEN);
++	random_ether_addr(priv->defaut_mac);
++	netif_napi_add(ndev, &priv->napi_rx, eth_rx_poll, POLL_WEIGHT);
++	netif_tx_napi_add(ndev, &priv->napi_tx, eth_tx_poll, POLL_WEIGHT);
++
++	ether_addr_copy(ndev->dev_addr, priv->defaut_mac);
++	/* register the network device */
++	SET_NETDEV_DEV(ndev, &pdev->dev);
++	ret = register_netdev(ndev);
++	if (ret) {
++		dev_err(&pdev->dev, "error registering net device\n");
++		ret = -ENODEV;
++		goto error1;
++	}
++
++	netdev_info(ndev, "register newam335x eth successful\n");
+ 	return 0;
+ 
+ error1:
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
+index c58683b..237ecd4 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
+@@ -1,5 +1,6 @@
+ #ifndef __NEWAM335X_ETH_CPSW_H__
+ #define __NEWAM335X_ETH_CPSW_H__
++#include <linux/inetdevice.h>
+ 
+ struct newam335x_mdio_regs {
+ 	u32	version;
+@@ -132,6 +133,8 @@ struct newam335x_eth_priv {
+ 	struct phy_device *phydev;
+ 	int phyaddr;
+ 	int phytype;
++	struct napi_struct napi_tx;
++	struct napi_struct napi_rx;
+ 	struct cpsw_ss_regs *ss_regs;
+ 	struct cpsw_sl_regs *sl1_regs;
+ 	struct cpsw_sl_regs *sl2_regs;
+-- 
+1.9.1
+

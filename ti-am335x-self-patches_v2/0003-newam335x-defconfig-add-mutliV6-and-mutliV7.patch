@@ -1,0 +1,23 @@
+From 30bf745bc2690d7ac40f1cc56edbbcf1d1af174f Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Fri, 4 Aug 2017 11:07:26 +0800
+Subject: [PATCH 03/34] newam335x: defconfig: add mutliV6 and mutliV7
+
+---
+ arch/arm/configs/newam335x_defconfig | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/arch/arm/configs/newam335x_defconfig b/arch/arm/configs/newam335x_defconfig
+index 55e69b3..f0ecd22 100644
+--- a/arch/arm/configs/newam335x_defconfig
++++ b/arch/arm/configs/newam335x_defconfig
+@@ -1,4 +1,6 @@
+ CONFIG_ARCH_MULTI_V6=y
++CONFIG_ARCH_MULTI_V7=y
++CONFIG_ARCH_MULTI_V6_V7=y
+ CONFIG_EXPERT=y
+ CONFIG_ARCH_NEWAM335X=y
+ CONFIG_DEBUG_NEWAM335X_UART1=y
+-- 
+1.9.1
+

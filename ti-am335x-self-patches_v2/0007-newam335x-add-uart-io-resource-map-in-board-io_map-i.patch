@@ -1,0 +1,31 @@
+From ceb4bd3cc5967465714264a14b81ed87db52d007 Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Fri, 4 Aug 2017 13:57:36 +0800
+Subject: [PATCH 07/34] newam335x: add uart io resource map in board io_map
+ interface
+
+---
+ arch/arm/mach-newam335x/board.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/arch/arm/mach-newam335x/board.c b/arch/arm/mach-newam335x/board.c
+index c6109fd..8882013 100644
+--- a/arch/arm/mach-newam335x/board.c
++++ b/arch/arm/mach-newam335x/board.c
+@@ -20,6 +20,13 @@
+ 
+ #define OMAP_INTR_CON_BASE 0x48200000
+ 
++static struct map_desc uart_io_desc __initdata = {
++	.virtual	= 0xf9009000,
++	.pfn		= __phys_to_pfn(0x44E09000),
++	.length		= SZ_4K,
++	.type		= MT_DEVICE,
++};
++
+ static struct map_desc interrupt_desc __initdata = {
+ 	.virtual	= 0xf9200000,
+ 	.pfn		= __phys_to_pfn(0x48200000),
+-- 
+1.9.1
+

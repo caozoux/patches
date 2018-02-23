@@ -1,0 +1,162 @@
+From b2ff222702b048fdee4ac4e73b991fd33fba6a34 Mon Sep 17 00:00:00 2001
+From: zou cao <cao.zou@windriver.com>
+Date: Mon, 16 Oct 2017 15:07:08 +0800
+Subject: [PATCH 30/34] newam335x:eth: use napi poll
+
+---
+ drivers/net/ethernet/newam335x/Makefile             |  4 +++-
+ drivers/net/ethernet/newam335x/newam335x_debug.c    | 21 +++++++++++++++++++++
+ drivers/net/ethernet/newam335x/newam335x_debug.h    |  6 ++++++
+ drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c | 20 +++++++++++++++++---
+ drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h |  2 ++
+ 5 files changed, 49 insertions(+), 4 deletions(-)
+ create mode 100644 drivers/net/ethernet/newam335x/newam335x_debug.c
+ create mode 100644 drivers/net/ethernet/newam335x/newam335x_debug.h
+
+diff --git a/drivers/net/ethernet/newam335x/Makefile b/drivers/net/ethernet/newam335x/Makefile
+index 96db630..6db0218 100644
+--- a/drivers/net/ethernet/newam335x/Makefile
++++ b/drivers/net/ethernet/newam335x/Makefile
+@@ -1,3 +1,5 @@
++ccflags-y := -DDEBUG
++
+ obj-$(CONFIG_NEWAM335X_ETH_CPSW) := newam335x_eth_drv.o
+-newam335x_eth_drv-y  := newam335x_eth_cpsw.o newam335x_eth_ale.o newam335x_eth_cpdam.o newam335x_mdio.o
++newam335x_eth_drv-y  := newam335x_eth_cpsw.o newam335x_eth_ale.o newam335x_eth_cpdam.o newam335x_mdio.o newam335x_debug.o
+ 
+diff --git a/drivers/net/ethernet/newam335x/newam335x_debug.c b/drivers/net/ethernet/newam335x/newam335x_debug.c
+new file mode 100644
+index 0000000..69c4ade
+--- /dev/null
++++ b/drivers/net/ethernet/newam335x/newam335x_debug.c
+@@ -0,0 +1,21 @@
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/io.h>
++#include <linux/timer.h>
++#include <linux/delay.h>
++#include <linux/device.h>
++#include "newam335x_eth_cpsw.h"
++#include "newam335x_eth_cpdam.h"
++#include <linux/newam335x_debug.h>
++
++
++void dump_skb(struct sk_buff *skb)
++{
++	printk("zz %s sdk->len:%08x \n",__func__, (int)skb->len);
++	printk("zz %s sdk->data_len:%08x \n",__func__, (int)skb->data_len);
++	printk("zz %s skb->mac_len:%08x \n",__func__, (int)skb->mac_len);
++	printk("zz %s skb->pkt_type:%08x \n",__func__, (int)skb->pkt_type);
++}
++
++
+diff --git a/drivers/net/ethernet/newam335x/newam335x_debug.h b/drivers/net/ethernet/newam335x/newam335x_debug.h
+new file mode 100644
+index 0000000..115f68c
+--- /dev/null
++++ b/drivers/net/ethernet/newam335x/newam335x_debug.h
+@@ -0,0 +1,6 @@
++#ifndef __NEWAM335X_DEBUG_H__
++#define __NEWAM335X_DEBUG_H__
++
++void dump_skb(struct sk_buff *skb);
++
++#endif /* ifndef __NEWAM335X_DEBUG_H__ */
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
+index 8914f06..ce53e5a 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
+@@ -28,6 +28,7 @@
+ #include <linux/list.h>
+ #include "newam335x_eth_cpsw.h"
+ #include "newam335x_eth_cpdam.h"
++#include "newam335x_debug.h"
+ #include "ale.h"
+ 
+ #define CPSW_MAX_PACKET_SIZE	(1500 + 14 + 4 + 4)
+@@ -39,6 +40,7 @@
+ #define mac_lo(mac) (((mac)[4] << 0) | ((mac)[5] << 8))
+ 
+ int queue_rx_packages(struct newam335x_eth_priv *priv);
++static int handle_rx_package(struct newam335x_eth_priv *priv);
+ 
+ int gen_get_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
+ {   
+@@ -215,11 +217,13 @@ static void eth_adjust_link(struct net_device *ndev)
+ 	struct newam335x_eth_priv *priv = (struct newam335x_eth_priv *) netdev_priv(ndev);
+ 	struct phy_device *phydev = priv->phydev;
+ 
++	printk("zz %s %d link:%d\n", __func__, __LINE__, phydev->link);
++
+ 	if (phydev->link) {
+ 		netif_carrier_on(ndev);
+ 		cpdma_enable(priv, true);
+ 	} else {
+-
++		//cpdma_enable(priv, false);
+ 	}
+ }
+ 
+@@ -350,6 +354,12 @@ int queue_rx_packages(struct newam335x_eth_priv *priv)
+ 
+ static int eth_rx_poll(struct napi_struct *napi_rx, int budget)
+ {
++	struct newam335x_eth_priv *priv;
++	//printk("zz %s %d \n", __func__, __LINE__);
++	priv = netdev_priv(napi_rx->dev);
++	handle_rx_package(priv);
++	enable_irq(priv->rx_irq);
++	//printk("zz %s %d \n", __func__, __LINE__);
+ 	return 0;
+ }
+ 
+@@ -445,6 +455,7 @@ static int handle_rx_package(struct newam335x_eth_priv *priv)
+ 			skb = (struct sk_buff *) desc_data->skb;
+ 			len = status & 0x7ff;
+ 
++			dump_skb(skb);
+ 
+ 			skb_put(skb, len);
+ 			skb->protocol = eth_type_trans(skb, ndev);
+@@ -480,9 +491,10 @@ static int handle_rx_package(struct newam335x_eth_priv *priv)
+ static irqreturn_t rx_intr(int __always_unused irq, void *data)
+ {
+ 	struct newam335x_eth_priv *priv= data;
+-	printk("zz %s %d +\n", __func__, __LINE__);
++	//__napi_schedule(&priv->napi_rx); it is halt in irq context
++	//__napi_schedule_irqoff(&priv->napi_rx);
++	//disable_irq_nosync(irq);
+ 	handle_rx_package(priv);
+-	printk("zz %s %d -\n", __func__, __LINE__);
+ 	return IRQ_HANDLED;
+ }
+ 
+@@ -530,9 +542,11 @@ static int newam335x_eth_probe(struct platform_device *pdev)
+ 
+ 			ret = request_irq(irq, tx_intr, 0,
+ 				  	pdev->name, priv);
++			priv->tx_irq = irq;
+ 		} else if (k == 1) {
+ 			ret = request_irq(irq, rx_intr, 0,
+ 				  	pdev->name, priv);
++			priv->rx_irq = irq;
+ 		}
+ 
+ 		if (ret)
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
+index a2b3e5e..97f6474 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
+@@ -148,6 +148,8 @@ struct newam335x_eth_priv {
+ 	struct cpdma_desc *desc;
+ 	struct cpdma_desc		*desc_free;
+ 	struct cpdma_chan		rx_chan, tx_chan;
++	int rx_irq;
++	int tx_irq;
+ 	u8 defaut_mac[6];
+ 	struct transfer_data  package_list[PACKAGE_NUM];
+ 	struct list_head free_list;
+-- 
+1.9.1
+

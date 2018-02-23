@@ -1,0 +1,281 @@
+From a49a018bfa58d4fae8666e19ba064d69effa7353 Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Wed, 2 Aug 2017 16:28:16 +0800
+Subject: [PATCH 01/34] update
+
+---
+ arch/arm/Kconfig                     |   2 +
+ arch/arm/Kconfig.debug               |   8 +++
+ arch/arm/configs/newam335x_defconfig |   7 +++
+ arch/arm/include/debug/newam335x.S   | 101 +++++++++++++++++++++++++++++++++++
+ arch/arm/mach-newam335x/Kconfig      |   2 +
+ arch/arm/mach-newam335x/Makefile     |   5 ++
+ arch/arm/mach-newam335x/board.c      |  74 +++++++++++++++++++++++++
+ 7 files changed, 199 insertions(+)
+ create mode 100644 arch/arm/configs/newam335x_defconfig
+ create mode 100644 arch/arm/include/debug/newam335x.S
+ create mode 100644 arch/arm/mach-newam335x/Kconfig
+ create mode 100644 arch/arm/mach-newam335x/Makefile
+ create mode 100644 arch/arm/mach-newam335x/board.c
+
+diff --git a/arch/arm/Kconfig b/arch/arm/Kconfig
+index b5d529f..e5878c4 100644
+--- a/arch/arm/Kconfig
++++ b/arch/arm/Kconfig
+@@ -850,6 +850,8 @@ source "arch/arm/mach-zx/Kconfig"
+ 
+ source "arch/arm/mach-zynq/Kconfig"
+ 
++source "arch/arm/mach-newam335x/Kconfig"
++
+ # ARMv7-M architecture
+ config ARCH_EFM32
+ 	bool "Energy Micro efm32"
+diff --git a/arch/arm/Kconfig.debug b/arch/arm/Kconfig.debug
+index d83f7c3..5cbea1e 100644
+--- a/arch/arm/Kconfig.debug
++++ b/arch/arm/Kconfig.debug
+@@ -642,6 +642,13 @@ choice
+ 		  This covers at least h4, 2430sdp, 3430sdp, 3630sdp,
+ 		  omap3 torpedo and 3530 lv som.
+ 
++	config DEBUG_NEWAM335X_UART1
++		bool "newam335x UART1 "
++		depends on ARCH_NEWAM335X
++		help
++		  This covers at least h4, 2430sdp, 3430sdp, 3630sdp,
++		  omap3 torpedo and 3530 lv som.
++
+ 	config DEBUG_OMAP2UART2
+ 		bool "Kernel low-level debugging messages via OMAP2/3/4 UART2"
+ 		depends on ARCH_OMAP2PLUS
+@@ -1429,6 +1436,7 @@ config DEBUG_LL_INCLUDE
+ 	default "debug/vf.S" if DEBUG_VF_UART
+ 	default "debug/vt8500.S" if DEBUG_VT8500_UART0
+ 	default "debug/zynq.S" if DEBUG_ZYNQ_UART0 || DEBUG_ZYNQ_UART1
++	default "debug/newam335x.S" if DEBUG_NEWAM335X_UART1
+ 	default "debug/bcm63xx.S" if DEBUG_BCM63XX_UART
+ 	default "debug/digicolor.S" if DEBUG_DIGICOLOR_UA0
+ 	default "debug/brcmstb.S" if DEBUG_BRCMSTB_UART
+diff --git a/arch/arm/configs/newam335x_defconfig b/arch/arm/configs/newam335x_defconfig
+new file mode 100644
+index 0000000..55e69b3
+--- /dev/null
++++ b/arch/arm/configs/newam335x_defconfig
+@@ -0,0 +1,7 @@
++CONFIG_ARCH_MULTI_V6=y
++CONFIG_EXPERT=y
++CONFIG_ARCH_NEWAM335X=y
++CONFIG_DEBUG_NEWAM335X_UART1=y
++CONFIG_DEBUG_LL=y
++#CONFIG_GENERIC_UART1=Y
++#DEBUG_AM33XXUART1=y
+diff --git a/arch/arm/include/debug/newam335x.S b/arch/arm/include/debug/newam335x.S
+new file mode 100644
+index 0000000..657a620
+--- /dev/null
++++ b/arch/arm/include/debug/newam335x.S
+@@ -0,0 +1,101 @@
++
++/*
++ * Debugging macro include header
++ *
++ *  Copyright (C) 1994-1999 Russell King
++ *  Moved from linux/arch/arm/kernel/debug.S by Ben Dooks
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++*/
++
++#include <linux/serial_reg.h>
++
++
++/* AM33XX serial port */
++#define AM33XX_UART1_BASE	0x44E09000
++
++#define OMAP_PORT_SHIFT		2
++#define ZOOM_PORT_SHIFT		1
++
++#define UART_OFFSET(addr)	((addr) & 0x00ffffff)
++
++		.pushsection .data
++omap_uart_phys:	.word	0
++omap_uart_virt:	.word	0
++omap_uart_lsr:	.word	0
++		.popsection
++
++		.macro	addruart, rp, rv, tmp
++
++		/* Use omap_uart_phys/virt if already configured */
++10:		adr	\rp, 99f		@ get effective addr of 99f
++		ldr	\rv, [\rp]		@ get absolute addr of 99f
++		sub	\rv, \rv, \rp		@ offset between the two
++		ldr	\rp, [\rp, #4]		@ abs addr of omap_uart_phys
++		sub	\tmp, \rp, \rv		@ make it effective
++		ldr	\rp, [\tmp, #0]		@ omap_uart_phys
++		ldr	\rv, [\tmp, #4]		@ omap_uart_virt
++		cmp	\rp, #0			@ is port configured?
++		cmpne	\rv, #0
++		bne	100f			@ already configured
++
++#ifdef CONFIG_DEBUG_GENERIC_UART1
++		ldr	\rp, =AM33XX_UART1_BASE
++		and	\rp, \rp, #0x00ffffff
++		b	97f
++#endif
++		b	10b
++
++		/* AM33XX: Store both phys and virt address for the uart */
++97:		add	\rp, \rp, #0x44000000	@ phys base
++		str	\rp, [\tmp, #0]		@ omap_uart_phys
++		sub	\rp, \rp, #0x44000000	@ phys base
++		add	\rp, \rp, #0xf9000000	@ virt base
++		str	\rp, [\tmp, #4]		@ omap_uart_virt
++		mov	\rp, #(UART_LSR << OMAP_PORT_SHIFT)
++		str	\rp, [\tmp, #8]		@ omap_uart_lsr
++
++		b	10b
++
++		/* Store both phys and virt address for the uart */
++98:		add	\rp, \rp, #0x48000000	@ phys base
++		str	\rp, [\tmp, #0]		@ omap_uart_phys
++		sub	\rp, \rp, #0x48000000	@ phys base
++		add	\rp, \rp, #0xfa000000	@ virt base
++		str	\rp, [\tmp, #4]		@ omap_uart_virt
++		mov	\rp, #(UART_LSR << OMAP_PORT_SHIFT)
++		str	\rp, [\tmp, #8]		@ omap_uart_lsr
++
++		b	10b
++
++		.align
++99:		.word	.
++		.word	omap_uart_phys
++		.ltorg
++
++100:		/* Pass the UART_LSR reg address */
++		ldr	\tmp, [\tmp, #8]	@ omap_uart_lsr
++		add	\rp, \rp, \tmp
++		add	\rv, \rv, \tmp
++		.endm
++
++		.macro	senduart,rd,rx
++		orr	\rd, \rd, \rx, lsl #24	@ preserve LSR reg offset
++		bic	\rx, \rx, #0xff		@ get base (THR) reg address
++		strb	\rd, [\rx]		@ send lower byte of rd
++		orr	\rx, \rx, \rd, lsr #24	@ restore original rx (LSR)
++		bic	\rd, \rd, #(0xff << 24)	@ restore original rd
++		.endm
++
++		.macro	busyuart,rd,rx
++1001:		ldrb	\rd, [\rx]		@ rx contains UART_LSR address
++		and	\rd, \rd, #(UART_LSR_TEMT | UART_LSR_THRE)
++		teq	\rd, #(UART_LSR_TEMT | UART_LSR_THRE)
++		bne	1001b
++		.endm
++
++		.macro	waituart,rd,rx
++		.endm
+diff --git a/arch/arm/mach-newam335x/Kconfig b/arch/arm/mach-newam335x/Kconfig
+new file mode 100644
+index 0000000..0ad87b5
+--- /dev/null
++++ b/arch/arm/mach-newam335x/Kconfig
+@@ -0,0 +1,2 @@
++config ARCH_NEWAM335X
++	def_bool y
+diff --git a/arch/arm/mach-newam335x/Makefile b/arch/arm/mach-newam335x/Makefile
+new file mode 100644
+index 0000000..32120c7
+--- /dev/null
++++ b/arch/arm/mach-newam335x/Makefile
+@@ -0,0 +1,5 @@
++
++#ccflags-$(CONFIG_ARCH_MULTIPLATFORM) := -I$(srctree)/$(src)/include \
++	-I$(srctree)/arch/arm/plat-omap/include
++
++obj-y := board.o
+diff --git a/arch/arm/mach-newam335x/board.c b/arch/arm/mach-newam335x/board.c
+new file mode 100644
+index 0000000..9fa52b2
+--- /dev/null
++++ b/arch/arm/mach-newam335x/board.c
+@@ -0,0 +1,74 @@
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/clk.h>
++#include <linux/platform_device.h>
++#include <linux/gpio.h>
++#include <linux/platform_data/pca953x.h>
++#include <linux/can/platform/ti_hecc.h>
++#include <linux/davinci_emac.h>
++#include <linux/mmc/host.h>
++#include <linux/usb/musb.h>
++#include <linux/platform_data/gpio-omap.h>
++
++#include <asm/mach-types.h>
++#include <asm/mach/arch.h>
++#include <asm/mach/map.h>
++#include <asm/setup.h>
++
++void __init newam335x_reserve(void)
++{
++	early_print("%s\n", __func__);
++}
++
++void __init newam335x_map_io(void)
++{
++	early_print("%s\n", __func__);
++}
++
++void __init newam335x_init_early(void)
++{
++	early_print("%s\n", __func__);
++}
++
++void __init newam335x_init_irq(void)
++{
++	early_print("%s\n", __func__);
++}
++
++void __init newam335x_intc_handle_irq(void)
++{
++	early_print("%s\n", __func__);
++}
++
++void __init newam335x_evm_init(void)
++{
++	early_print("%s\n", __func__);
++}
++
++void __init newam335x_init_late(void)
++{
++	early_print("%s\n", __func__);
++}
++
++void __init newam335x_sync32k_timer_init(void)
++{
++	early_print("%s\n", __func__);
++}
++
++void __init newam335x_restart(void)
++{
++	early_print("%s\n", __func__);
++}
++
++MACHINE_START(OMAP3517EVM, "newam335x board")
++	.atag_offset	= 0x100,
++	.reserve	= newam335x_reserve,
++	.map_io		= newam335x_map_io,
++	.init_early	= newam335x_init_early,
++	.init_irq	= newam335x_init_irq,
++	.handle_irq	= newam335x_intc_handle_irq,
++	.init_machine	= newam335x_evm_init,
++	.init_late	= newam335x_init_late,
++	.init_time	= newam335x_sync32k_timer_init,
++	.restart	= newam335x_restart,
++MACHINE_END
+-- 
+1.9.1
+

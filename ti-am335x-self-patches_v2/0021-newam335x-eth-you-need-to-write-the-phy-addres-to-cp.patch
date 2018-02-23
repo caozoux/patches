@@ -1,0 +1,209 @@
+From f468995b192466f6d00d68b3d01c6cc22931a23b Mon Sep 17 00:00:00 2001
+From: zou cao <cao.zou@windriver.com>
+Date: Tue, 22 Aug 2017 09:36:59 +0800
+Subject: [PATCH 21/34] newam335x:eth: you need to write the phy addres to
+ cpdma hdp
+
+---
+ .../net/ethernet/newam335x/newam335x_eth_cpdam.c   | 52 +++++++++-------------
+ .../net/ethernet/newam335x/newam335x_eth_cpsw.c    |  3 +-
+ .../net/ethernet/newam335x/newam335x_eth_cpsw.h    |  4 +-
+ 3 files changed, 23 insertions(+), 36 deletions(-)
+
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.c b/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.c
+index e8f2e16..6f92ad2 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.c
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpdam.c
+@@ -4,6 +4,7 @@
+ #include <linux/io.h>
+ #include <linux/timer.h>
+ #include <linux/delay.h>
++#include <linux/device.h>
+ #include "newam335x_eth_cpsw.h"
+ 
+ 
+@@ -38,6 +39,8 @@
+ #define chan_read(chan, fld)		__raw_readl((chan)->fld)
+ #define chan_read_ptr(chan, fld)	((void *)__raw_readl((chan)->fld))
+ 
++#define DESC_PHYADDR(priv, desc) (((void*)desc-(void*)&priv->desc[0])+CPPI_RAM_BASE)
++
+ void loop_dealy(int ms)
+ {
+ 	volatile u32 i, j, k;
+@@ -49,7 +52,7 @@ void loop_dealy(int ms)
+ 	}
+ }
+ 
+-void newam335x_cpdma_dump(struct cpdma_desc *desc)
++void newam335x_cpdma_dump(struct newam335x_eth_priv *priv, struct cpdma_desc *desc)
+ {
+ 	printk("zz %s desc:%08x \n",__func__, (int)desc);
+ 	printk("hw_next:%08x \n",desc_read(desc, hw_next));
+@@ -58,24 +61,19 @@ void newam335x_cpdma_dump(struct cpdma_desc *desc)
+ 	printk("hw_mode:%08x \n",desc_read(desc, hw_mode));
+ 	printk("sw_buffer:%08x \n",desc_read(desc, sw_buffer));
+ 	printk("sw_len:%08x \n",desc_read(desc, sw_len));
++	printk("dma_status:%08x \n",__raw_readl(priv->dma_regs+0x24));
+ }
+ 
+ struct transfer_data * cpdma_alloc(struct newam335x_eth_priv *priv)
+ {
+-#if 0
+-	struct cpdma_desc *desc = priv->desc_free;
+-
+-	if (desc)
+-		priv->desc_free = desc_read_ptr(desc, hw_next);
+-	return desc;
+-#else
+ 	struct transfer_data  *desc_data;
+ 	desc_data = list_first_entry(&priv->free_list, struct transfer_data, head);
+-	if (desc_data)
++	if (desc_data) {
++		list_del(&desc_data->head);
+ 		return desc_data;
++	}
+ 
+ 	return NULL;
+-#endif
+ }
+ 
+ void cpdma_free(struct newam335x_eth_priv *priv, struct transfer_data *desc_data)
+@@ -109,7 +107,7 @@ int handle_cpdma_desc(struct newam335x_eth_priv *priv, struct cpdma_chan *chan)
+ 		
+ 	chan->head = desc_read_ptr(desc, hw_next);
+ 	chan_write(chan, cp, desc);
+-	writel((u32)desc, chan->cp);
++	__raw_writel((u32)desc, chan->cp);
+ 
+ 	cpdma_free(priv, desc_data);
+ 	return 0;
+@@ -129,20 +127,21 @@ int cpdma_submit(struct newam335x_eth_priv *priv, void *buffer, int len, bool is
+ 		while(1);
+ 		return -ENOMEM;
+ 	}
+-	
++
+ 	if (isTx) {
+-		memcpy(desc_data->buffer, buffer, len);
+ 		chan = &priv->tx_chan;
++		dma_addr = dma_map_single(&priv->pdev->dev, buffer, len, DMA_TO_DEVICE);
+ 	} else {
++		dma_addr = dma_map_single(&priv->pdev->dev, desc_data->buffer, 2048, DMA_FROM_DEVICE);
+ 		chan = &priv->rx_chan;
+ 	}
+ 
+-	if (isTx) {
+-		dma_addr = dma_map_single(&priv->pdev->dev, buffer, len, DMA_TO_DEVICE);
+-		ret = dma_mapping_error(&priv->pdev->dev, dma_addr);
+-	}
++	ret = dma_mapping_error(&priv->pdev->dev, dma_addr);
++	if (ret)
++		dev_err(&priv->pdev->dev, "dma map failed\n");
+ 
+ 	desc = desc_data->desc;
++	printk("zz %s desc:%08x \n",__func__, DESC_PHYADDR(priv, desc));
+ 
+ 	mode = CPDMA_DESC_OWNER | CPDMA_DESC_SOP | CPDMA_DESC_EOP;
+ 	desc_write(desc, hw_next,   0);
+@@ -156,12 +155,10 @@ int cpdma_submit(struct newam335x_eth_priv *priv, void *buffer, int len, bool is
+ 		len = PKT_MIN;
+ 
+ 	if (!chan->head) {
+-		//newam335x_cpdma_dump(desc);
+ 		/* simple case - first packet enqueued */
+ 		chan->head = desc;
+ 		chan->tail = desc;
+-		chan_write(chan, hdp, desc);
+-		printk("zz first %s %d hdp:%08x\n", __func__, __LINE__, chan->hdp);
++		chan_write(chan, hdp, DESC_PHYADDR(priv, desc));
+ 		goto done;
+ 	}
+ 	
+@@ -176,12 +173,6 @@ int cpdma_submit(struct newam335x_eth_priv *priv, void *buffer, int len, bool is
+ 
+ done:
+ 
+-	if (isTx) {
+-		while(1) {
+-			newam335x_cpdma_dump(desc);
+-			loop_dealy(1000);
+-		}
+-	}
+ 	if (chan->rxfree)
+ 		chan_write(chan, rxfree, 1);
+ 
+@@ -208,14 +199,14 @@ void newam335x_cpdam_init(struct newam335x_eth_priv *priv)
+ 	__raw_writel(0, priv->dma_regs + CPDMA_RXCONTROL);
+ 
+ 	/* clear dma state */
+-	writel(1, priv->dma_regs + CPDMA_SOFTRESET);
++	__raw_writel(1, priv->dma_regs + CPDMA_SOFTRESET);
+ 	start = jiffies + 10*HZ;
+ 	do  {
+ 		if (time_after(jiffies, start)) {
+ 			printk("Error: reset cpdma failed");
+ 			return;
+ 		}
+-		val = readl(priv->dma_regs + CPDMA_SOFTRESET);
++		val = __raw_readl(priv->dma_regs + CPDMA_SOFTRESET);
+ 		msleep(1);
+ 	} while((val&1) == 1);
+ 
+@@ -235,16 +226,13 @@ void newam335x_cpdam_init(struct newam335x_eth_priv *priv)
+ 	__raw_writel(1, priv->dma_regs + CPDMA_TXCONTROL);
+ 	__raw_writel(1, priv->dma_regs + CPDMA_RXCONTROL);
+ 
+-#if 0
+ 	/* submit rx descs */
+ 	for (i = 0; i < RX_PACKAGE_NUM; i++) {
+-		data = &priv->package_list[i];
+-		ret = cpdma_submit(priv, data->buffer, 2048, 0);
++		ret = cpdma_submit(priv, NULL, 2048, 0);
+ 		if (ret < 0) {
+ 			printk("error %d submitting rx desc\n", ret);
+ 			break;
+ 		}
+ 	}
+-#endif
+ }
+ 
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
+index 46b0cda8..34a7f93 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.c
+@@ -150,7 +150,7 @@ static int newam335x_eth_init(struct net_device *ndev)
+ 	u32 val;
+ 	struct newam335x_eth_priv *priv = (struct newam335x_eth_priv *) netdev_priv(ndev);
+ 
+-	ale_dump(priv);
++
+ 	setbit_and_wait_for_clear32(&priv->ss_regs->soft_reset);
+ 
+ 	//writel(readl(&priv->ale_regs+CPSW_ALE_CONTROL) & ~(1<<2),
+@@ -180,7 +180,6 @@ static int newam335x_eth_init(struct net_device *ndev)
+ 
+ 	newam335x_cpdam_init(priv);
+ 
+-	ale_dump(priv);
+ #if 0
+ 	newam335x_phy_init(dev);
+ 	phy_startup(priv->phydev);
+diff --git a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
+index 428f794..ca70d22 100644
+--- a/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
++++ b/drivers/net/ethernet/newam335x/newam335x_eth_cpsw.h
+@@ -125,8 +125,8 @@ struct transfer_data {
+ 	struct list_head head;
+ };
+ 
+-#define PACKAGE_NUM (32)
+-#define RX_PACKAGE_NUM (24)
++#define PACKAGE_NUM (16)
++#define RX_PACKAGE_NUM (8)
+ struct newam335x_eth_priv {
+ 	struct platform_device *pdev;
+ 	struct net_device	*ndev;
+-- 
+1.9.1
+

@@ -1,0 +1,27 @@
+From 55c5517791ea594a50dbf5f07f55531333c4d186 Mon Sep 17 00:00:00 2001
+From: zou cao <cao.zou@windriver.com>
+Date: Tue, 24 Oct 2017 17:28:06 +0800
+Subject: [PATCH 33/34] newam335x:platform: use lagcy irq to uart resource
+
+---
+ arch/arm/mach-newam335x/platform.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/arch/arm/mach-newam335x/platform.c b/arch/arm/mach-newam335x/platform.c
+index 3fbc72d..d6e92e6 100644
+--- a/arch/arm/mach-newam335x/platform.c
++++ b/arch/arm/mach-newam335x/platform.c
+@@ -85,6 +85,10 @@ void __init board_newam335x_init(void)
+ 
+ 	newam335x_eth_resources[1].end += (irq-newam335x_eth_resources[1].start);
+ 	newam335x_eth_resources[1].start = irq;
++
++	hw_irq = newam335x_uart_resources[1].start;
++	irq = get_domain_irq(hw_irq);
++	newam335x_uart_resources[1].start = irq;
+ 	platform_device_register(&newam335x_uart_device);
+ 
+ 	platform_device_register(&newam335x_mdio_device);
+-- 
+1.9.1
+

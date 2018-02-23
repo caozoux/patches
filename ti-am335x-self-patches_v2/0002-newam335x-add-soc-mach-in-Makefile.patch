@@ -1,0 +1,103 @@
+From 49689d7fae72c4997b1424016a726e544b4a397d Mon Sep 17 00:00:00 2001
+From: zoucao <zoucaox@outlook.com>
+Date: Fri, 4 Aug 2017 11:06:19 +0800
+Subject: [PATCH 02/34] newam335x: add soc mach in Makefile
+
+---
+ arch/arm/Makefile                  |  1 +
+ arch/arm/include/debug/newam335x.S | 65 ++------------------------------------
+ 2 files changed, 4 insertions(+), 62 deletions(-)
+
+diff --git a/arch/arm/Makefile b/arch/arm/Makefile
+index 6be9ee1..4d665f7 100644
+--- a/arch/arm/Makefile
++++ b/arch/arm/Makefile
+@@ -222,6 +222,7 @@ machine-$(CONFIG_ARCH_W90X900)		+= w90x900
+ machine-$(CONFIG_ARCH_ZX)		+= zx
+ machine-$(CONFIG_ARCH_ZYNQ)		+= zynq
+ machine-$(CONFIG_PLAT_SPEAR)		+= spear
++machine-$(CONFIG_ARCH_NEWAM335X)		+=newam335x
+ 
+ # Platform directory name.  This list is sorted alphanumerically
+ # by CONFIG_* macro name.
+diff --git a/arch/arm/include/debug/newam335x.S b/arch/arm/include/debug/newam335x.S
+index 657a620..f1fcb14 100644
+--- a/arch/arm/include/debug/newam335x.S
++++ b/arch/arm/include/debug/newam335x.S
+@@ -16,70 +16,11 @@
+ 
+ /* AM33XX serial port */
+ #define AM33XX_UART1_BASE	0x44E09000
+-
+-#define OMAP_PORT_SHIFT		2
+-#define ZOOM_PORT_SHIFT		1
+-
+-#define UART_OFFSET(addr)	((addr) & 0x00ffffff)
+-
+-		.pushsection .data
+-omap_uart_phys:	.word	0
+-omap_uart_virt:	.word	0
+-omap_uart_lsr:	.word	0
+-		.popsection
++#define AM33XX_UART1_VIR	0x44E09000
+ 
+ 		.macro	addruart, rp, rv, tmp
+-
+-		/* Use omap_uart_phys/virt if already configured */
+-10:		adr	\rp, 99f		@ get effective addr of 99f
+-		ldr	\rv, [\rp]		@ get absolute addr of 99f
+-		sub	\rv, \rv, \rp		@ offset between the two
+-		ldr	\rp, [\rp, #4]		@ abs addr of omap_uart_phys
+-		sub	\tmp, \rp, \rv		@ make it effective
+-		ldr	\rp, [\tmp, #0]		@ omap_uart_phys
+-		ldr	\rv, [\tmp, #4]		@ omap_uart_virt
+-		cmp	\rp, #0			@ is port configured?
+-		cmpne	\rv, #0
+-		bne	100f			@ already configured
+-
+-#ifdef CONFIG_DEBUG_GENERIC_UART1
+-		ldr	\rp, =AM33XX_UART1_BASE
+-		and	\rp, \rp, #0x00ffffff
+-		b	97f
+-#endif
+-		b	10b
+-
+-		/* AM33XX: Store both phys and virt address for the uart */
+-97:		add	\rp, \rp, #0x44000000	@ phys base
+-		str	\rp, [\tmp, #0]		@ omap_uart_phys
+-		sub	\rp, \rp, #0x44000000	@ phys base
+-		add	\rp, \rp, #0xf9000000	@ virt base
+-		str	\rp, [\tmp, #4]		@ omap_uart_virt
+-		mov	\rp, #(UART_LSR << OMAP_PORT_SHIFT)
+-		str	\rp, [\tmp, #8]		@ omap_uart_lsr
+-
+-		b	10b
+-
+-		/* Store both phys and virt address for the uart */
+-98:		add	\rp, \rp, #0x48000000	@ phys base
+-		str	\rp, [\tmp, #0]		@ omap_uart_phys
+-		sub	\rp, \rp, #0x48000000	@ phys base
+-		add	\rp, \rp, #0xfa000000	@ virt base
+-		str	\rp, [\tmp, #4]		@ omap_uart_virt
+-		mov	\rp, #(UART_LSR << OMAP_PORT_SHIFT)
+-		str	\rp, [\tmp, #8]		@ omap_uart_lsr
+-
+-		b	10b
+-
+-		.align
+-99:		.word	.
+-		.word	omap_uart_phys
+-		.ltorg
+-
+-100:		/* Pass the UART_LSR reg address */
+-		ldr	\tmp, [\tmp, #8]	@ omap_uart_lsr
+-		add	\rp, \rp, \tmp
+-		add	\rv, \rv, \tmp
++		ldr \rp, =AM33XX_UART1_BASE
++		ldr	\rv, =0xf9009000
+ 		.endm
+ 
+ 		.macro	senduart,rd,rx
+-- 
+1.9.1
+
