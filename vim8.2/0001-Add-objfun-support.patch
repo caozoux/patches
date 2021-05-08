@@ -1,0 +1,278 @@
+From 252bbf44584280d6e6d446ae270463541220e9fa Mon Sep 17 00:00:00 2001
+From: zoucaox <zoucaox@outlook.com>
+Date: Sat, 8 May 2021 17:56:24 +0800
+Subject: [PATCH 1/2] Add objfun support
+
+---
+ src/edit.c              |  3 ++-
+ src/insexpand.c         | 41 ++++++++++++++++++++++++++++++++---------
+ src/option.c            |  3 +++
+ src/option.h            |  4 ++++
+ src/optiondefs.h        | 11 +++++++++++
+ src/optionstr.c         |  1 +
+ src/proto/insexpand.pro |  1 +
+ src/structs.h           |  1 +
+ 8 files changed, 55 insertions(+), 10 deletions(-)
+
+diff --git a/src/edit.c b/src/edit.c
+index 9162fe629..7e03d038b 100644
+--- a/src/edit.c
++++ b/src/edit.c
+@@ -1272,8 +1272,9 @@ docomplete:
+ #endif
+ 	    compl_busy = FALSE;
+ 	    break;
+-
+ 	case Ctrl_Y:	// copy from previous line or scroll down
++	    if (ctrl_x_mode_obj())
++		goto docomplete;
+ 	case Ctrl_E:	// copy from next line	   or scroll up
+ 	    c = ins_ctrl_ey(c);
+ 	    break;
+diff --git a/src/insexpand.c b/src/insexpand.c
+index 9bbf1233c..55121a39a 100644
+--- a/src/insexpand.c
++++ b/src/insexpand.c
+@@ -37,6 +37,7 @@
+ # define CTRL_X_SPELL		14
+ # define CTRL_X_LOCAL_MSG	15	// only used in "ctrl_x_msgs"
+ # define CTRL_X_EVAL		16	// for builtin function complete()
++#define CTRL_X_OBJ		17	
+ 
+ # define CTRL_X_MSG(i) ctrl_x_msgs[(i) & ~CTRL_X_WANT_IDENT]
+ 
+@@ -243,6 +244,8 @@ ins_ctrl_x(void)
+ /*
+  * Functions to check the current CTRL-X mode.
+  */
++
++int ctrl_x_mode_obj(void) { return ctrl_x_mode == CTRL_X_OBJ; }
+ int ctrl_x_mode_none(void) { return ctrl_x_mode == 0; }
+ int ctrl_x_mode_normal(void) { return ctrl_x_mode == CTRL_X_NORMAL; }
+ int ctrl_x_mode_scroll(void) { return ctrl_x_mode == CTRL_X_SCROLL; }
+@@ -370,6 +373,8 @@ vim_is_ctrl_x_key(int c)
+ 	    return (c == Ctrl_S || c == Ctrl_P || c == Ctrl_N);
+ 	case CTRL_X_EVAL:
+ 	    return (c == Ctrl_P || c == Ctrl_N);
++	case CTRL_X_OBJ:
++	    return (c == Ctrl_Y || c == Ctrl_P || c == Ctrl_N);
+     }
+     internal_error("vim_is_ctrl_x_key()");
+     return FALSE;
+@@ -395,6 +400,7 @@ ins_compl_accept_char(int c)
+ 	    // "proto", not "proto/" as a whole
+ 	    return vim_isfilec(c) && !vim_ispathsep(c);
+ 
++	case CTRL_X_OBJ:    
+ 	case CTRL_X_CMDLINE:
+ 	case CTRL_X_OMNI:
+ 	    // Command line and Omni completion can work with just about any
+@@ -1606,8 +1612,8 @@ ins_compl_need_restart(void)
+     // Return TRUE if we didn't complete finding matches or when the
+     // 'completefunc' returned "always" in the "refresh" dictionary item.
+     return compl_was_interrupted
+-	|| ((ctrl_x_mode == CTRL_X_FUNCTION || ctrl_x_mode == CTRL_X_OMNI)
+-						  && compl_opt_refresh_always);
++	|| ((ctrl_x_mode == CTRL_X_FUNCTION || ctrl_x_mode == CTRL_X_OMNI 
++	|| ctrl_x_mode == CTRL_X_OBJ) && compl_opt_refresh_always);
+ }
+ 
+ /*
+@@ -1876,7 +1882,7 @@ ins_compl_prep(int c)
+ 	switch (c)
+ 	{
+ 	    case Ctrl_E:
+-	    case Ctrl_Y:
++	    /*case Ctrl_Y:
+ 		ctrl_x_mode = CTRL_X_SCROLL;
+ 		if (!(State & REPLACE_FLAG))
+ 		    edit_submode = (char_u *)_(" (insert) Scroll (^E/^Y)");
+@@ -1884,7 +1890,7 @@ ins_compl_prep(int c)
+ 		    edit_submode = (char_u *)_(" (replace) Scroll (^E/^Y)");
+ 		edit_submode_pre = NULL;
+ 		showmode();
+-		break;
++		break;*/
+ 	    case Ctrl_L:
+ 		ctrl_x_mode = CTRL_X_WHOLE_LINE;
+ 		break;
+@@ -1906,6 +1912,9 @@ ins_compl_prep(int c)
+ 		break;
+ 	    case Ctrl_O:
+ 		ctrl_x_mode = CTRL_X_OMNI;
++	    case Ctrl_Y:
++		ctrl_x_mode = CTRL_X_OBJ;
++		break;
+ 		break;
+ #endif
+ 	    case 's':
+@@ -2195,7 +2204,7 @@ ins_compl_next_buf(buf_T *buf, int flag)
+  */
+     static void
+ expand_by_function(
+-    int		type,	    // CTRL_X_OMNI or CTRL_X_FUNCTION
++    int		type,	    /* CTRL_X_OMNI or CTRL_X_FUNCTION , CTRL_X_OBJ*/
+     char_u	*base)
+ {
+     list_T      *matchlist = NULL;
+@@ -2206,7 +2215,14 @@ expand_by_function(
+     typval_T	rettv;
+     int		save_State = State;
+ 
+-    funcname = (type == CTRL_X_FUNCTION) ? curbuf->b_p_cfu : curbuf->b_p_ofu;
++    if (type == CTRL_X_FUNCTION) {
++        funcname = curbuf->b_p_cfu;
++    } else if (type == CTRL_X_OBJ) {
++        funcname = curbuf->b_p_objfu; 
++    } else {
++        funcname = curbuf->b_p_ofu; 
++    }
++
+     if (*funcname == NUL)
+ 	return;
+ 
+@@ -2925,6 +2941,7 @@ ins_compl_get_exp(pos_T *ini)
+ #ifdef FEAT_COMPL_FUNC
+ 	case CTRL_X_FUNCTION:
+ 	case CTRL_X_OMNI:
++	case CTRL_X_OBJ:
+ 	    expand_by_function(type, compl_pattern);
+ 	    break;
+ #endif
+@@ -3831,7 +3848,8 @@ ins_complete(int c, int enable_pum)
+ 		compl_col = (int)(compl_xp.xp_pattern - compl_pattern);
+ 	    compl_length = curs_col - compl_col;
+ 	}
+-	else if (ctrl_x_mode == CTRL_X_FUNCTION || ctrl_x_mode == CTRL_X_OMNI)
++	else if (ctrl_x_mode == CTRL_X_FUNCTION || ctrl_x_mode == CTRL_X_OMNI 
++		|| ctrl_x_mode == CTRL_X_OBJ)
+ 	{
+ #ifdef FEAT_COMPL_FUNC
+ 	    // Call user defined function 'completefunc' with "a:findstart"
+@@ -3844,8 +3862,13 @@ ins_complete(int c, int enable_pum)
+ 
+ 	    // Call 'completefunc' or 'omnifunc' and get pattern length as a
+ 	    // string
+-	    funcname = ctrl_x_mode == CTRL_X_FUNCTION
+-					  ? curbuf->b_p_cfu : curbuf->b_p_ofu;
++	    if (ctrl_x_mode == CTRL_X_FUNCTION) {
++	        funcname = curbuf->b_p_cfu;
++	    } else if (ctrl_x_mode == CTRL_X_OBJ) {
++	        funcname = curbuf->b_p_objfu; 
++	    } else {
++	        funcname = curbuf->b_p_ofu; 
++	    }
+ 	    if (*funcname == NUL)
+ 	    {
+ 		semsg(_(e_notset), ctrl_x_mode == CTRL_X_FUNCTION
+diff --git a/src/option.c b/src/option.c
+index 7c783757b..0165a7612 100644
+--- a/src/option.c
++++ b/src/option.c
+@@ -5325,6 +5325,7 @@ get_varp(struct vimoption *p)
+ #ifdef FEAT_COMPL_FUNC
+ 	case PV_CFU:	return (char_u *)&(curbuf->b_p_cfu);
+ 	case PV_OFU:	return (char_u *)&(curbuf->b_p_ofu);
++	case PV_OBJFU:	return (char_u *)&(curbuf->b_p_objfu);
+ #endif
+ #ifdef FEAT_EVAL
+ 	case PV_TFU:	return (char_u *)&(curbuf->b_p_tfu);
+@@ -5823,6 +5824,8 @@ buf_copy_options(buf_T *buf, int flags)
+ 	    COPY_OPT_SCTX(buf, BV_CFU);
+ 	    buf->b_p_ofu = vim_strsave(p_ofu);
+ 	    COPY_OPT_SCTX(buf, BV_OFU);
++	    buf->b_p_objfu = vim_strsave(p_objfu);
++	    COPY_OPT_SCTX(buf, BV_OBJFU);
+ #endif
+ #ifdef FEAT_EVAL
+ 	    buf->b_p_tfu = vim_strsave(p_tfu);
+diff --git a/src/option.h b/src/option.h
+index 30053cc6c..f6ac9eb9b 100644
+--- a/src/option.h
++++ b/src/option.h
+@@ -400,6 +400,7 @@ EXTERN char_u	*p_cinw;	// 'cinwords'
+ #ifdef FEAT_COMPL_FUNC
+ EXTERN char_u	*p_cfu;		// 'completefunc'
+ EXTERN char_u	*p_ofu;		// 'omnifunc'
++EXTERN char_u	*p_objfu;
+ #endif
+ EXTERN int	p_ci;		// 'copyindent'
+ #if defined(FEAT_GUI) && defined(MACOS_X)
+@@ -1223,6 +1224,9 @@ enum
+ #ifdef FEAT_VARTABS
+     , BV_VSTS
+     , BV_VTS
++#endif
++#ifdef FEAT_COMPL_FUNC
++    , BV_OBJFU
+ #endif
+     , BV_COUNT	    // must be the last one
+ };
+diff --git a/src/optiondefs.h b/src/optiondefs.h
+index 42f355c28..7634f324c 100644
+--- a/src/optiondefs.h
++++ b/src/optiondefs.h
+@@ -110,6 +110,7 @@
+ #define PV_NF		OPT_BUF(BV_NF)
+ #ifdef FEAT_COMPL_FUNC
+ # define PV_OFU		OPT_BUF(BV_OFU)
++# define PV_OBJFU	OPT_BUF(BV_OBJFU)
+ #endif
+ #define PV_PATH		OPT_BOTH(OPT_BUF(BV_PATH))
+ #define PV_PI		OPT_BUF(BV_PI)
+@@ -1822,6 +1823,16 @@ static struct vimoption options[] =
+ 			    {(char_u *)0L, (char_u *)0L}
+ #endif
+ 			    SCTX_INIT},
++    {"objfunc",    "objfu",  P_STRING|P_ALLOCED|P_VI_DEF|P_SECURE,
++#ifdef FEAT_COMPL_FUNC
++			    (char_u *)&p_objfu, PV_OBJFU,
++			    {(char_u *)"", (char_u *)0L}
++#else
++			    (char_u *)NULL, PV_NONE,
++			    {(char_u *)0L, (char_u *)0L}
++#endif
++			    SCTX_INIT},
++
+     {"open",	    NULL,   P_BOOL|P_VI_DEF,
+ 			    (char_u *)NULL, PV_NONE,
+ 			    {(char_u *)FALSE, (char_u *)0L} SCTX_INIT},
+diff --git a/src/optionstr.c b/src/optionstr.c
+index 1ec8d05d6..f6764ba02 100644
+--- a/src/optionstr.c
++++ b/src/optionstr.c
+@@ -267,6 +267,7 @@ check_buf_options(buf_T *buf)
+ #ifdef FEAT_COMPL_FUNC
+     check_string_option(&buf->b_p_cfu);
+     check_string_option(&buf->b_p_ofu);
++    check_string_option(&buf->b_p_objfu);
+ #endif
+ #ifdef FEAT_EVAL
+     check_string_option(&buf->b_p_tfu);
+diff --git a/src/proto/insexpand.pro b/src/proto/insexpand.pro
+index 90b5a0732..126f50ce9 100644
+--- a/src/proto/insexpand.pro
++++ b/src/proto/insexpand.pro
+@@ -13,6 +13,7 @@ int ctrl_x_mode_thesaurus(void);
+ int ctrl_x_mode_cmdline(void);
+ int ctrl_x_mode_function(void);
+ int ctrl_x_mode_omni(void);
++int ctrl_x_mode_obj(void);
+ int ctrl_x_mode_spell(void);
+ int ctrl_x_mode_line_or_eval(void);
+ int ctrl_x_mode_not_default(void);
+diff --git a/src/structs.h b/src/structs.h
+index 9861bb601..9654cda19 100644
+--- a/src/structs.h
++++ b/src/structs.h
+@@ -2841,6 +2841,7 @@ struct file_buffer
+ #ifdef FEAT_COMPL_FUNC
+     char_u	*b_p_cfu;	// 'completefunc'
+     char_u	*b_p_ofu;	// 'omnifunc'
++    char_u	*b_p_objfu;	/* 'objfunc' */
+ #endif
+ #ifdef FEAT_EVAL
+     char_u	*b_p_tfu;	// 'tagfunc'
+-- 
+2.25.1
+

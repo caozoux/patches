@@ -1,0 +1,32 @@
+From 62474c779f848074e6b8204a2fb4c1a4d0f444b4 Mon Sep 17 00:00:00 2001
+From: zoucaox <zoucaox@outlook.com>
+Date: Sat, 8 May 2021 18:47:24 +0800
+Subject: [PATCH 2/2] add objfunc error
+
+---
+ src/insexpand.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/src/insexpand.c b/src/insexpand.c
+index 55121a39a..454ae93e4 100644
+--- a/src/insexpand.c
++++ b/src/insexpand.c
+@@ -3871,8 +3871,13 @@ ins_complete(int c, int enable_pum)
+ 	    }
+ 	    if (*funcname == NUL)
+ 	    {
+-		semsg(_(e_notset), ctrl_x_mode == CTRL_X_FUNCTION
+-					     ? "completefunc" : "omnifunc");
++	    if (ctrl_x_mode == CTRL_X_FUNCTION) {
++	        semsg(_(e_notset), "completefunc");
++	    } else if (ctrl_x_mode == CTRL_X_OBJ) {
++	        semsg(_(e_notset), "objfunc");
++	    } else {
++	        semsg(_(e_notset), "omnifunc");
++	    }
+ 		// restore did_ai, so that adding comment leader works
+ 		did_ai = save_did_ai;
+ 		return FAIL;
+-- 
+2.25.1
+
