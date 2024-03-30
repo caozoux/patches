@@ -1,0 +1,185 @@
+From 8a35b1241b541c93eb19ac5f3908f3b1c8f26c41 Mon Sep 17 00:00:00 2001
+From: zou cao <zoucaox@outlook.com>
+Date: Fri, 13 May 2022 16:58:06 +0800
+Subject: [PATCH 1/4] add qos log
+
+Signed-off-by: zou cao <zoucaox@outlook.com>
+---
+ kernel/sched/qos.c | 165 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 165 insertions(+)
+ create mode 100644 kernel/sched/qos.c
+
+diff --git a/kernel/sched/qos.c b/kernel/sched/qos.c
+new file mode 100644
+index 000000000000..434404e7e803
+--- /dev/null
++++ b/kernel/sched/qos.c
+@@ -0,0 +1,165 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Real-Time Scheduling Class (mapped to the SCHED_FIFO and SCHED_RR
++ * policies)
++ */
++#include "sched.h"
++
++#include "pelt.h"
++
++static void enqueue_task_qos(struct rq *rq, struct task_struct *p, int flags);
++static void dequeue_task_qos(struct rq *rq, struct task_struct *p, int flags);
++static void yield_task_qos(struct rq *rq);
++static void check_preempt_curr_qos(struct rq *rq, struct task_struct *p, int flags);
++static struct task_struct *pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf);
++static void put_prev_task_qos(struct rq *rq, struct task_struct *p);
++static int select_task_rq_qos(struct task_struct *p, int cpu, int sd_flag, int flags);
++static void rq_online_qos(struct rq *rq);
++static void rq_offline_qos(struct rq *rq);
++static void task_woken_qos(struct rq *rq, struct task_struct *p);
++static void switched_from_qos(struct rq *rq, struct task_struct *p);
++static void set_curr_task_qos(struct rq *rq);
++static void task_tick_qos(struct rq *rq, struct task_struct *p, int queued);
++static unsigned int get_rr_interval_qos(struct rq *rq, struct task_struct *task);
++static void update_nr_uninterruptible_qos(struct task_struct *p, long inc);
++static void prio_changed_qos(struct rq *rq, struct task_struct *p, int oldprio);
++static void switched_to_qos(struct rq *rq, struct task_struct *p);
++static void update_curr_qos(struct rq *rq);
++
++
++const struct sched_class qos_sched_class = {
++	.next			= &fair_sched_class,
++	.enqueue_task		= enqueue_task_qos,
++	.dequeue_task		= dequeue_task_qos,
++	.yield_task		= yield_task_qos,
++
++	.check_preempt_curr	= check_preempt_curr_qos,
++
++	.pick_next_task		= pick_next_task_qos,
++	.put_prev_task		= put_prev_task_qos,
++
++#ifdef CONFIG_SMP
++	.select_task_rq		= select_task_rq_qos,
++
++	.set_cpus_allowed       = set_cpus_allowed_common,
++	.rq_online              = rq_online_qos,
++	.rq_offline             = rq_offline_qos,
++	.task_woken		= task_woken_qos,
++	.switched_from		= switched_from_qos,
++#endif
++
++	.set_curr_task          = set_curr_task_qos,
++	.task_tick		= task_tick_qos,
++
++	.get_rr_interval	= get_rr_interval_qos,
++
++	.prio_changed		= prio_changed_qos,
++	.switched_to		= switched_to_qos,
++
++	.update_curr		= update_curr_qos,
++
++#ifdef CONFIG_SCHED_SLI
++	.update_nr_uninterruptible = update_nr_uninterruptible_qos,
++#endif
++};
++
++/*
++ * Adding/removing a task to/from a priority array:
++ */
++static void
++enqueue_task_qos(struct rq *rq, struct task_struct *p, int flags)
++{
++}
++
++static void dequeue_task_qos(struct rq *rq, struct task_struct *p, int flags)
++{
++}
++
++static void yield_task_qos(struct rq *rq)
++{
++}
++
++/*
++ * Preempt the current task with a newly woken task if needed:
++ */
++static void check_preempt_curr_qos(struct rq *rq, struct task_struct *p, int flags)
++{
++
++}
++
++static struct sched_qos_entity *pick_next_qos_entity(struct rq *rq,
++						   struct qos_rq *qos_rq)
++{
++	return NULL;
++}
++
++static struct task_struct *
++pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
++{
++	struct task_struct *p = NULL;
++	return p;
++}
++
++static void put_prev_task_qos(struct rq *rq, struct task_struct *p)
++{
++}
++
++/* Assumes rq->lock is held */
++static void rq_online_qos(struct rq *rq)
++{
++}
++
++static void rq_offline_qos(struct rq *rq)
++{
++}
++
++static void task_woken_qos(struct rq *rq, struct task_struct *p)
++{
++}
++
++static void switched_from_qos(struct rq *rq, struct task_struct *p)
++{
++}
++
++static void set_curr_task_qos(struct rq *rq)
++{
++}
++
++static void task_tick_qos(struct rq *rq, struct task_struct *p, int queued)
++{
++}
++
++static unsigned int get_rr_interval_qos(struct rq *rq, struct task_struct *task)
++{
++	return 0;
++}
++
++/*
++ * Priority of the task has changed. This may cause
++ * us to initiate a push or pull.
++ */
++static void
++prio_changed_qos(struct rq *rq, struct task_struct *p, int oldprio)
++{
++}
++
++static void switched_to_qos(struct rq *rq, struct task_struct *p)
++{
++
++}
++
++static void update_curr_qos(struct rq *rq)
++{
++
++}
++
++static void update_nr_uninterruptible_qos(struct task_struct *p, long inc)
++{
++}
++
++static int
++select_task_rq_qos(struct task_struct *p, int cpu, int sd_flag, int flags)
++{
++	return cpu;
++}
++
+-- 
+2.25.1
+

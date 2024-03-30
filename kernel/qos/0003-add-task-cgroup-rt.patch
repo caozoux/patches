@@ -1,0 +1,317 @@
+From a22a810c05f894e23dddf0b95bee35d13d2e925c Mon Sep 17 00:00:00 2001
+From: zou cao <zoucaox@outlook.com>
+Date: Wed, 18 May 2022 16:47:37 +0800
+Subject: [PATCH 3/4] add task cgroup rt
+
+Signed-off-by: zou cao <zoucaox@outlook.com>
+---
+ include/linux/sched.h |   4 +-
+ kernel/sched/core.c   |  15 +++-
+ kernel/sched/qos.c    | 160 ++++++++++++++++++++++++++++++++++++++++--
+ kernel/sched/sched.h  |   9 ++-
+ 4 files changed, 178 insertions(+), 10 deletions(-)
+
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 6fce5d6c70f8..5732211acaf0 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -523,8 +523,8 @@ struct sched_qos_entity {
+ 	unsigned short			on_rq;
+ 	unsigned short			on_list;
+ 
+-	struct sched_rt_entity		*back;
+-	struct sched_rt_entity		*parent;
++	struct sched_qos_entity		*back;
++	struct sched_qos_entity		*parent;
+ 	/* rq on which this entity is (to be) queued: */
+ 	struct qos_rq			*qos_rq;
+ 	/* rq "owned" by this entity/group: */
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 38ed0112807f..bd7cb46fb112 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -4141,8 +4141,6 @@ static void __setscheduler(struct rq *rq, struct task_struct *p,
+ 	if (keep_boost)
+ 		p->prio = rt_effective_prio(p, p->prio);
+ 
+-	printk("zz %s %d %d %d\n", __func__, __LINE__, p->prio, qos_prio(p->prio));
+-
+ 	if (dl_prio(p->prio))
+ 		p->sched_class = &dl_sched_class;
+ 	else if (qos_prio(p->prio))
+@@ -4394,7 +4392,6 @@ static int __sched_setscheduler(struct task_struct *p,
+ 		if (oldprio < p->prio)
+ 			queue_flags |= ENQUEUE_HEAD;
+ 
+-		printk("zz %s %d %lx\n", __func__, __LINE__, p->sched_class);
+ 		enqueue_task(rq, p, queue_flags);
+ 	}
+ 	if (running)
+@@ -5993,6 +5990,9 @@ void __init sched_init(void)
+ #ifdef CONFIG_RT_GROUP_SCHED
+ 	alloc_size += 2 * nr_cpu_ids * sizeof(void **);
+ #endif
++
++	alloc_size += 2 * nr_cpu_ids * sizeof(void **);
++
+ 	if (alloc_size) {
+ 		ptr = (unsigned long)kzalloc(alloc_size, GFP_NOWAIT);
+ 
+@@ -6012,6 +6012,12 @@ void __init sched_init(void)
+ 		ptr += nr_cpu_ids * sizeof(void **);
+ 
+ #endif /* CONFIG_RT_GROUP_SCHED */
++
++		root_task_group.qos_se = (struct sched_qos_entity **)ptr;
++		ptr += nr_cpu_ids * sizeof(void **);
++
++		root_task_group.qos_rq = (struct qos_rq **)ptr;
++		ptr += nr_cpu_ids * sizeof(void **);
+ 	}
+ #ifdef CONFIG_CPUMASK_OFFSTACK
+ 	for_each_possible_cpu(i) {
+@@ -6334,6 +6340,9 @@ struct task_group *sched_create_group(struct task_group *parent)
+ 	if (!alloc_rt_sched_group(tg, parent))
+ 		goto err;
+ 
++	if (!alloc_qos_sched_group(tg, parent))
++		goto err;
++
+ 	return tg;
+ 
+ err:
+diff --git a/kernel/sched/qos.c b/kernel/sched/qos.c
+index 3cd2bb815156..0457a2fb7c61 100644
+--- a/kernel/sched/qos.c
++++ b/kernel/sched/qos.c
+@@ -111,6 +111,155 @@ static inline int qos_se_prio(struct sched_qos_entity *qos_se)
+ 
+ 	return qos_task_of(qos_se)->prio;
+ }
++
++void init_qos_rq(struct qos_rq *qos_rq);
++
++static void qos_sched_clean_up(void **ptr)
++{
++	struct qos_rq **qos_rq = ptr[0];
++	struct sched_qos_entity **qos_se = ptr[1];
++	int i;
++
++	for_each_possible_cpu(i) {
++		memset(qos_rq[i], 0, sizeof(struct qos_rq));
++		memset(qos_se[i], 0, sizeof(struct sched_qos_entity));
++		init_qos_rq(qos_rq[i]);
++	}
++}
++
++static void __free_qos_sched_group(void **ptr)
++{
++	struct qos_rq **qos_rq = ptr[0];
++	struct sched_qos_entity **qos_se = ptr[1];
++	int i;
++
++	for_each_possible_cpu(i) {
++		if (qos_rq)
++			kfree(qos_rq[i]);
++		if (qos_se)
++			kfree(qos_se[i]);
++	}
++
++	kfree(qos_rq);
++	kfree(qos_se);
++}
++
++CACHE_HEADER(qos_sched_cache_header, DEFAULT_CACHE_SIZE,
++		qos_sched_clean_up, __free_qos_sched_group);
++
++void init_qos_rq(struct qos_rq *qos_rq)
++{
++	struct qos_prio_array *array;
++	int i;
++
++	array = &qos_rq->active;
++	for (i = 0; i < MAX_RT_PRIO; i++) {
++		INIT_LIST_HEAD(array->queue + i);
++		__clear_bit(i, array->bitmap);
++	}
++	/* delimiter for bitsearch: */
++	__set_bit(MAX_RT_PRIO, array->bitmap);
++
++#if defined CONFIG_SMP
++	qos_rq->highest_prio.curr = MAX_RT_PRIO;
++	qos_rq->highest_prio.next = MAX_RT_PRIO;
++	qos_rq->qos_nr_migratory = 0;
++	qos_rq->overloaded = 0;
++	plist_head_init(&qos_rq->pushable_tasks);
++#endif /* CONFIG_SMP */
++	/* We staqos is dequeued state, because no RT tasks are queued */
++	qos_rq->qos_queued = 0;
++
++	qos_rq->qos_time = 0;
++	qos_rq->qos_throttled = 0;
++	qos_rq->qos_runtime = 0;
++	raw_spin_lock_init(&qos_rq->qos_runtime_lock);
++}
++
++void init_tg_qos_entry(struct task_group *tg, struct qos_rq *qos_rq,
++		struct sched_qos_entity *qos_se, int cpu,
++		struct sched_qos_entity *parent)
++{
++	struct rq *rq = cpu_rq(cpu);
++
++	qos_rq->highest_prio.curr = MAX_RT_PRIO;
++	qos_rq->qos_nr_boosted = 0;
++	qos_rq->rq = rq;
++	qos_rq->tg = tg;
++
++	tg->qos_rq[cpu] = qos_rq;
++	tg->qos_se[cpu] = qos_se;
++
++	if (!qos_se)
++		return;
++
++	if (!parent)
++		qos_se->qos_rq = &rq->qos;
++	else
++		qos_se->qos_rq = parent->my_q;
++
++	qos_se->my_q = qos_rq;
++	qos_se->parent = parent;
++	INIT_LIST_HEAD(&qos_se->run_list);
++}
++
++static void qos_sched_cache_init(struct task_group *tg, struct task_group *parent)
++{
++	int i;
++
++	for_each_possible_cpu(i) {
++		//tg->qos_rq[i]->qos_runtime = tg->qos_bandwidth.qos_runtime;
++		init_tg_qos_entry(tg, tg->qos_rq[i], tg->qos_se[i], i, parent->qos_se[i]);
++	}
++}
++
++int alloc_qos_sched_group(struct task_group *tg, struct task_group *parent)
++{
++	struct qos_rq *qos_rq;
++	struct sched_qos_entity *qos_se;
++	int i;
++	void *tmp[2];
++
++	if (get_from_cache(&qos_sched_cache_header, tmp, 2)) {
++		tg->qos_rq = tmp[0];
++		tg->qos_se = tmp[1];
++		qos_sched_cache_init(tg, parent);
++		return 1;
++	}
++
++	tg->qos_rq = kcalloc(nr_cpu_ids, sizeof(qos_rq), GFP_KERNEL);
++	if (!tg->qos_rq)
++		goto err;
++	tg->qos_se = kcalloc(nr_cpu_ids, sizeof(qos_se), GFP_KERNEL);
++	if (!tg->qos_se)
++		goto err;
++
++	//init_qos_bandwidth(&tg->qos_bandwidth,
++	//		ktime_to_ns(def_qos_bandwidth.qos_period), 0);
++
++	for_each_possible_cpu(i) {
++		qos_rq = kzalloc_node(sizeof(struct qos_rq),
++				     GFP_KERNEL, cpu_to_node(i));
++		if (!qos_rq)
++			goto err;
++
++		qos_se = kzalloc_node(sizeof(struct sched_qos_entity),
++				     GFP_KERNEL, cpu_to_node(i));
++		if (!qos_se)
++			goto err_free_rq;
++
++		init_qos_rq(qos_rq);
++		//qos_rq->qos_runtime = tg->qos_bandwidth.qos_runtime;
++		init_tg_qos_entry(tg, qos_rq, qos_se, i, parent->qos_se[i]);
++	}
++
++	return 1;
++
++err_free_rq:
++	kfree(qos_rq);
++err:
++	return 0;
++}
+ /*
+  * Adding/removing a task to/from a priority array:
+  */
+@@ -120,10 +269,14 @@ enqueue_task_qos(struct rq *rq, struct task_struct *p, int flags)
+ 	struct sched_qos_entity *qos_se = &p->qos;
+ 	struct qos_rq *qos_rq = qos_se->qos_rq;
+ 	struct qos_prio_array *array = &qos_rq->active;
+-	struct list_head *queue = array->queue + qos_se_prio(qos_se);
++	struct list_head *queue;
++
++	printk("zz %s qos_se:%lx \n",__func__, (unsigned long)qos_se);
++	printk("zz %s qos_rq:%lx \n",__func__, (unsigned long)qos_rq);
++	printk("zz %s arrary:%lx \n",__func__, (unsigned long)array);
++	//queue = array->queue + qos_se_prio(qos_se);
+ 
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
+-	list_add_tail(&qos_se->run_list, queue);
+ 
+ 	//return qos_rq->rq;
+ }
+@@ -159,7 +312,7 @@ static struct task_struct *
+ pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ {
+ 	struct task_struct *p = NULL;
+-	MEDEBUG("zz %s %d %s\n", __func__, __LINE__, current->comm);
++	//MEDEBUG("zz %s %d %s\n", __func__, __LINE__, current->comm);
+ 	return p;
+ }
+ 
+@@ -242,4 +395,3 @@ select_task_rq_qos(struct task_struct *p, int cpu, int sd_flag, int flags)
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
+ 	return cpu;
+ }
+-
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index e106b5d9d4f2..38bb7949da86 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -413,6 +413,8 @@ struct task_group {
+ #ifdef CONFIG_RT_GROUP_SCHED
+ 	struct sched_rt_entity	**rt_se;
+ 	struct rt_rq		**rt_rq;
++
++	struct sched_qos_entity	**qos_se;
+ 	struct qos_rq		**qos_rq;
+ 
+ 	struct rt_bandwidth	rt_bandwidth;
+@@ -494,6 +496,8 @@ extern long sched_group_rt_runtime(struct task_group *tg);
+ extern long sched_group_rt_period(struct task_group *tg);
+ extern int sched_rt_can_attach(struct task_group *tg, struct task_struct *tsk);
+ 
++extern int alloc_qos_sched_group(struct task_group *tg, struct task_group *parent);
++
+ extern struct task_group *sched_create_group(struct task_group *parent);
+ extern void sched_online_group(struct task_group *tg,
+ 			       struct task_group *parent);
+@@ -910,7 +914,7 @@ struct rq {
+ 
+ 	struct cfs_rq		cfs;
+ 	struct rt_rq		rt;
+-	struct rt_rq		qos;
++	struct qos_rq		qos;
+ 	struct dl_rq		dl;
+ 
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+@@ -1547,6 +1551,9 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
+ 	p->rt.rt_rq  = tg->rt_rq[cpu];
+ 	p->rt.parent = tg->rt_se[cpu];
+ #endif
++
++	p->qos.qos_rq  = tg->qos_rq[cpu];
++	p->qos.parent = tg->qos_se[cpu];
+ }
+ 
+ #else /* CONFIG_CGROUP_SCHED */
+-- 
+2.25.1
+

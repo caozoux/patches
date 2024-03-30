@@ -1,0 +1,221 @@
+From e76c117141673a2ab06881fc80eb1a40b62a50e6 Mon Sep 17 00:00:00 2001
+From: zou cao <zoucaox@outlook.com>
+Date: Sat, 30 Jul 2022 17:00:38 +0800
+Subject: [PATCH 4/4] add qos fixed
+
+---
+ kernel/sched/core.c  |  2 +
+ kernel/sched/qos.c   | 89 +++++++++++++++++++++++++++++++++++++-------
+ kernel/sched/sched.h |  4 ++
+ 3 files changed, 82 insertions(+), 13 deletions(-)
+
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index bd7cb46fb112..0f029dd2adb0 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -6062,6 +6062,7 @@ void __init sched_init(void)
+ 		rq->calc_load_update = jiffies + LOAD_FREQ;
+ 		init_cfs_rq(&rq->cfs);
+ 		init_rt_rq(&rq->rt);
++		init_qos_rq(&rq->qos);
+ 		init_dl_rq(&rq->dl);
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ 		root_task_group.shares = ROOT_TASK_GROUP_LOAD;
+@@ -6094,6 +6095,7 @@ void __init sched_init(void)
+ #ifdef CONFIG_RT_GROUP_SCHED
+ 		init_tg_rt_entry(&root_task_group, &rq->rt, NULL, i, NULL);
+ #endif
++		init_tg_qos_entry(&root_task_group, &rq->qos, NULL, i, NULL);
+ #ifdef CONFIG_SMP
+ 		rq->sd = NULL;
+ 		rq->rd = NULL;
+diff --git a/kernel/sched/qos.c b/kernel/sched/qos.c
+index 0457a2fb7c61..099b602524cd 100644
+--- a/kernel/sched/qos.c
++++ b/kernel/sched/qos.c
+@@ -13,6 +13,9 @@
+     if (level >= DEBUGLEVE) \
+         printk(fmt, ##arg);
+ 
++#define for_each_sched_qos_entity(qos_se) \
++	for (; qos_se; qos_se = qos_se->parent)
++
+ #define MEDEBUG(fmt, args...) level_debug(1, fmt, ## args)
+ #define MEINFO(fmt,args...)     level_debug(2, fmt, ## args)
+ #define MEWARN(fmt,args...)     level_debug(3, fmt, ## args)
+@@ -260,30 +263,63 @@ int alloc_qos_sched_group(struct task_group *tg, struct task_group *parent)
+ err:
+ 	return 0;
+ }
++
++static inline int qos_rq_throttled(struct qos_rq *qos_rq)
++{
++	return qos_rq->qos_throttled && !qos_rq->qos_nr_boosted;
++}
++
++static void
++enqueue_top_qos_rq(struct qos_rq *qos_rq)
++{
++	struct rq *rq = rq_of_qos_rq(qos_rq);
++	
++	if (qos_rq->qos_queued)
++		return;
++
++	if (qos_rq_throttled(qos_rq))
++		return;
++
++	if (qos_rq->qos_nr_running) {
++		add_nr_running(rq, qos_rq->qos_nr_running);
++		qos_rq->qos_queued = 1;
++	}
++}
++
+ /*
+  * Adding/removing a task to/from a priority array:
+  */
+ static void
+-enqueue_task_qos(struct rq *rq, struct task_struct *p, int flags)
++enqueue_task_qos(struct rq *sched_rq, struct task_struct *p, int flags)
+ {
+ 	struct sched_qos_entity *qos_se = &p->qos;
+-	struct qos_rq *qos_rq = qos_se->qos_rq;
+-	struct qos_prio_array *array = &qos_rq->active;
+-	struct list_head *queue;
++	struct rq *rq = rq_of_qos_se(qos_se);
++	//struct qos_rq *group_rq = group_qos_rq(qos_se);
++
++	for_each_sched_qos_entity(qos_se) {
++		struct qos_rq *qos_rq = qos_rq_of_se(qos_se);
++		struct qos_prio_array *array = &qos_rq->active;
++		//struct list_head *queue;
++		//printk("zz %s qos_se:%lx \n", __func__, (unsigned long)qos_se);
++		//printk("zz %s qos_rq:%lx \n", __func__, (unsigned long)qos_rq);
++		//printk("zz %s arrary:%lx \n", __func__, (unsigned long)array);
++	}
+ 
+-	printk("zz %s qos_se:%lx \n",__func__, (unsigned long)qos_se);
+-	printk("zz %s qos_rq:%lx \n",__func__, (unsigned long)qos_rq);
+-	printk("zz %s arrary:%lx \n",__func__, (unsigned long)array);
+-	//queue = array->queue + qos_se_prio(qos_se);
++	printk("zz %s rq:%lx \n",__func__, (unsigned long)rq);
+ 
++	//queue = array->queue + qos_se_prio(qos_se);
++	enqueue_top_qos_rq(&rq->qos);
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
+-
+-	//return qos_rq->rq;
++	//enqueue_top_rt_rq(&rq->rt);
+ }
+ 
+ static void dequeue_task_qos(struct rq *rq, struct task_struct *p, int flags)
+ {
++	struct sched_rt_entity *rt_se = &p->rt;
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
++	update_curr_rt(rq);
++	dequeue_rt_entity(rt_se, flags);
++	//dequeue_pushable_task(rq, p);
+ }
+ 
+ static void yield_task_qos(struct rq *rq)
+@@ -312,7 +348,7 @@ static struct task_struct *
+ pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ {
+ 	struct task_struct *p = NULL;
+-	//MEDEBUG("zz %s %d %s\n", __func__, __LINE__, current->comm);
++	MEDEBUG("zz %s %d %s\n", __func__, __LINE__, current->comm);
+ 	return p;
+ }
+ 
+@@ -339,19 +375,44 @@ static void task_woken_qos(struct rq *rq, struct task_struct *p)
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
+ }
+ 
++static inline void qos_queue_pull_task(struct rq *rq)
++{
++	//queue_balance_callback(rq, &per_cpu(qos_pull_head, rq->cpu), pull_qos_task);
++}
++
+ static void switched_from_qos(struct rq *rq, struct task_struct *p)
+ {
++	//if (!task_on_rq_queued(p) || rq->qos.rt_nr_running)
++	//	return;
++	//rt_queue_pull_task(rq);
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
+ }
+ 
+ static void set_curr_task_qos(struct rq *rq)
+ {
++	struct task_struct *p = rq->curr;
++
++	plist_del(&p->pushable_tasks, &rq->qos.pushable_tasks);
++
++	p->se.exec_start = rq_clock_task(rq);
++
++	//dequeue_pushable_task(rq, p);
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
+ }
+ 
+ static void task_tick_qos(struct rq *rq, struct task_struct *p, int queued)
+ {
++	struct sched_rt_entity *rt_se = &p->rt;
++
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
++	//update_curr_rt(rq);
++	//update_rt_rq_load_avg(rq_clock_task(rq), rq, 1);
++
++	//watchdog(rq, p);
++
++	if (p->policy != SCHED_RR)
++		return;
++
+ }
+ 
+ static unsigned int get_rr_interval_qos(struct rq *rq, struct task_struct *task)
+@@ -372,14 +433,15 @@ prio_changed_qos(struct rq *rq, struct task_struct *p, int oldprio)
+ 
+ static void switched_to_qos(struct rq *rq, struct task_struct *p)
+ {
++	if (task_on_rq_queued(p) && rq->curr != p) {
++		printk("zz %s %d \n", __func__, __LINE__);
++	}
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
+-
+ }
+ 
+ static void update_curr_qos(struct rq *rq)
+ {
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
+-
+ }
+ 
+ #ifdef CONFIG_SCHED_SLI
+@@ -395,3 +457,4 @@ select_task_rq_qos(struct task_struct *p, int cpu, int sd_flag, int flags)
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
+ 	return cpu;
+ }
++
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index 38bb7949da86..57e7bd0769b4 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -497,6 +497,9 @@ extern long sched_group_rt_period(struct task_group *tg);
+ extern int sched_rt_can_attach(struct task_group *tg, struct task_struct *tsk);
+ 
+ extern int alloc_qos_sched_group(struct task_group *tg, struct task_group *parent);
++void init_tg_qos_entry(struct task_group *tg, struct qos_rq *qos_rq,
++		struct sched_qos_entity *qos_se, int cpu,
++		struct sched_qos_entity *parent);
+ 
+ extern struct task_group *sched_create_group(struct task_group *parent);
+ extern void sched_online_group(struct task_group *tg,
+@@ -2237,6 +2240,7 @@ print_numa_stats(struct seq_file *m, int node, unsigned long tsf,
+ 
+ extern void init_cfs_rq(struct cfs_rq *cfs_rq);
+ extern void init_rt_rq(struct rt_rq *rt_rq);
++extern void init_qos_rq(struct qos_rq *qos_rq);
+ extern void init_dl_rq(struct dl_rq *dl_rq);
+ 
+ extern void cfs_bandwidth_usage_inc(void);
+-- 
+2.25.1
+
