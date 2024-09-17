@@ -1,0 +1,252 @@
+From 82dafb90815238e42c74eafb9d0efb069c898e6a Mon Sep 17 00:00:00 2001
+From: Zou Cao <zoucaox@outlook.com>
+Date: Tue, 17 Sep 2024 03:45:43 -0400
+Subject: [PATCH 10/10] qos: format code stycle
+
+Signed-off-by: Zou Cao <zoucaox@outlook.com>
+---
+ kernel/sched/qos.c | 89 ++++++++++++++++++++++++----------------------
+ 1 file changed, 47 insertions(+), 42 deletions(-)
+
+diff --git a/kernel/sched/qos.c b/kernel/sched/qos.c
+index 92c8c94baed5..de9c8146cb60 100644
+--- a/kernel/sched/qos.c
++++ b/kernel/sched/qos.c
+@@ -42,7 +42,7 @@ static void update_nr_uninterruptible_qos(struct task_struct *p, long inc);
+ #endif
+ static void prio_changed_qos(struct rq *rq, struct task_struct *p, int oldprio);
+ static void switched_to_qos(struct rq *rq, struct task_struct *p);
+-static void update_curr_qos(struct rq *rq);
++static void update_curr_qos(struct qos_rq *rq);
+ static void dequeue_pushable_task(struct rq *rq, struct task_struct *p);
+ static void enqueue_pushable_task(struct rq *rq, struct task_struct *p);
+ 
+@@ -60,7 +60,7 @@ static void enqueue_pushable_task(struct rq *rq, struct task_struct *p);
+ #define ID_UNDERCLASS		0x0001
+ #define ID_HIGHCLASS		0x0002
+ 
+-static inline struct task_struct *task_qos_of(struct sched_qos_entity *se)
++static inline struct task_struct *task_of_se(struct sched_qos_entity *se)
+ {
+ 	return container_of(se, struct task_struct, qos);
+ }
+@@ -103,12 +103,6 @@ static inline int qos_bandwidth_enabled(void)
+ 	return 1;
+ }
+ 
+-/* runqueue on which this entity is (to be) queued */
+-static inline struct qos_rq *qos_rq_of(struct sched_qos_entity *se)
+-{
+-	return se->qos_rq;
+-}
+-
+ static u64 __calc_delta(u64 delta_exec, unsigned long weight, struct load_weight *lw)
+ {
+ 	u64 fact = scale_load_down(weight);
+@@ -180,7 +174,7 @@ void init_qos_bandwidth(struct qos_bandwidth *qos_b, u64 period, u64 runtime)
+ 
+ static void sched_update_curr_qos(struct rq *rq)
+ {
+-	update_curr_qos(rq);
++	update_curr_qos(&rq->qos);
+ }
+ 
+ void set_cpus_allowed_qos(struct task_struct *p, const struct cpumask *new_mask)
+@@ -240,7 +234,7 @@ static inline struct rq *rq_of_qos_rq(struct qos_rq *qos_rq)
+ 	return qos_rq->rq;
+ }
+ 
+-static inline struct qos_rq *qos_rq_of_se(struct sched_qos_entity *qos_se)
++static inline struct qos_rq *qos_rq_by_se(struct sched_qos_entity *qos_se)
+ {
+ 	return qos_se->qos_rq;
+ }
+@@ -502,7 +496,7 @@ enqueue_task_qos(struct rq *rq, struct task_struct *p, int flags)
+ 	//struct qos_rq *group_rq = group_qos_rq(qos_se);
+ 
+ 	for_each_sched_qos_entity(qos_se) {
+-		struct qos_rq *qos_rq = qos_rq_of_se(qos_se);
++		struct qos_rq *qos_rq = qos_rq_by_se(qos_se);
+ #ifdef RQ_PLIST
+ 		plist_node_init(&p->pushable_tasks, p->prio);
+ 		plist_add(&p->pushable_tasks, &rq->qos.pushable_tasks);
+@@ -521,7 +515,7 @@ enqueue_task_qos(struct rq *rq, struct task_struct *p, int flags)
+ static void dequeue_task_qos(struct rq *rq, struct task_struct *p, int flags)
+ {
+ 	struct sched_qos_entity *qos_se = &p->qos;
+-	struct qos_rq *qos_rq = qos_rq_of_se(qos_se);
++	struct qos_rq *qos_rq = qos_rq_by_se(qos_se);
+ 
+ 	dequeue_pushable_task(rq, p);
+ 
+@@ -529,7 +523,7 @@ static void dequeue_task_qos(struct rq *rq, struct task_struct *p, int flags)
+ 	dec_qos_tasks(qos_se, qos_rq);
+ 	qos_se->on_rq = 0;
+ 
+-	update_curr_qos(rq);
++	update_curr_qos(qos_rq);
+ 
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
+ }
+@@ -583,7 +577,7 @@ pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ 	struct sched_qos_entity *se, *curr;
+ 
+ 	if (prev->sched_class == &qos_sched_class)
+-		update_curr_qos(rq);
++		update_curr_qos(qos_rq);
+ 
+ 	if (!qos_rq->qos_nr_running)
+ 		goto idle;
+@@ -610,7 +604,7 @@ pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ 	se = left; /* ideally we run the leftmost entity */
+ 
+ 	if (se)  {
+-		p = task_qos_of(se);
++		p = task_of_se(se);
+ 		qos_rq->curr = &p->qos;
+ 		put_prev_task(rq, prev);
+ 	} else
+@@ -626,8 +620,8 @@ pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ 
+ static inline int on_qos_rq(struct sched_qos_entity *qos_se)
+ {
+-	//return qos_se->on_rq;
+-	return !RB_EMPTY_NODE(&qos_se->run_node);
++	return qos_se->on_rq;
++	//return !RB_EMPTY_NODE(&qos_se->run_node);
+ }
+ 
+ static void enqueue_pushable_task(struct rq *rq, struct task_struct *p)
+@@ -680,7 +674,7 @@ static void dequeue_pushable_task(struct rq *rq, struct task_struct *p)
+ 	plist_node_init(&p->pushable_tasks, p->prio);
+ #else
+ 	struct sched_qos_entity *qos_se = &p->qos;
+-	struct qos_rq *qos_rq = qos_rq_of_se(qos_se);
++	struct qos_rq *qos_rq = qos_rq_by_se(qos_se);
+ 	struct rb_root_cached *root;
+ 	root = qos_id_rb_root(qos_rq, qos_se);
+ 
+@@ -690,12 +684,16 @@ static void dequeue_pushable_task(struct rq *rq, struct task_struct *p)
+ 
+ static void put_prev_task_qos(struct rq *rq, struct task_struct *p)
+ {
+-	//struct sched_qos_entity *qos_se = &p->qos;
+-	//struct qos_rq *qos_rq = qos_rq_of_se(qos_se);
++	struct sched_qos_entity *qos_se = &p->qos;
++	struct qos_rq *qos_rq = &rq->qos;
++	
++	if (on_qos_rq(qos_se)) {
++		//enqueue_pushable_task(rq, p);
++		update_curr_qos(qos_rq);
++	}
++
++	qos_rq->curr = NULL;
+ 
+-	update_curr_qos(rq);
+-	if (!on_qos_rq(&p->qos))
+-		enqueue_pushable_task(rq, p);
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
+ }
+ 
+@@ -753,12 +751,16 @@ static void set_curr_task_qos(struct rq *rq)
+ 
+ static void task_tick_qos(struct rq *rq, struct task_struct *p, int queued)
+ {
++	struct qos_rq *qos_rq;
++	struct sched_qos_entity *se = &p->qos;
++
+ 	//u64 delta = 0;
+ 
+ 	//MEDEBUG("zz %s %d \n", __func__, __LINE__);
+ 	//更新 sched balance
+ 	rq->qos.tick_rec_runtime += HZ * 1000000;
+-	update_curr_qos(rq);
++
++	//update_curr_qos(&rq->qos);
+ 
+ 	if (rq->qos.rq_runtime > QOS_RT_RUNTIME) {
+ 		
+@@ -837,35 +839,38 @@ static int sched_qos_runtime_exceeded(struct qos_rq *qos_rq)
+ }
+ #endif
+ 
+-static void update_curr_qos(struct rq *rq)
++static void update_curr_qos(struct qos_rq *qos_rq)
+ {
+-	struct task_struct *curr = rq->curr;
++	struct task_struct *currtask;
+ 	//struct sched_qos_entity *qos_se = &curr->qos;
+ 	u64 delta_exec;
+ 	//u64 prev_delta_exec;
+ 	u64 now;
++	struct sched_qos_entity *curr = qos_rq->curr;
+ 
+-	if (curr->sched_class != &qos_sched_class)
++	if (unlikely(!curr))
+ 		return;
+ 
+-	now = rq_clock_task(rq);
+-	delta_exec = now - curr->se.exec_start;
+-	if (unlikely((s64)delta_exec <= 0))
+-		return;
++	currtask = task_of_se(qos_rq->curr);
+ 
+-	rq->qos.rq_runtime += delta_exec;
++	printk("zz %s utime:%lx +\n",__func__, (unsigned long)currtask->utime);
+ 
+-	schedstat_set(curr->se.statistics.exec_max,
+-		      max(curr->se.statistics.exec_max, delta_exec));
++	now = rq_clock_task(rq_of_qos_rq(qos_rq));
++	delta_exec = now - currtask->se.exec_start;
++	if (unlikely((s64)delta_exec <= 0))
++		return;
+ 
+-	curr->se.sum_exec_runtime += delta_exec;
++	qos_rq->rq_runtime += delta_exec;
+ 
+-	curr->qos.vruntime += calc_delta_qos(delta_exec, &curr->se);
++	schedstat_set(currtask->se.statistics.exec_max,
++		      max(currtask->se.statistics.exec_max, delta_exec));
+ 
+-	account_group_exec_runtime(curr, delta_exec);
++	currtask->se.sum_exec_runtime += delta_exec;
++	currtask->qos.vruntime += calc_delta_qos(delta_exec, &currtask->se);
++	currtask->se.exec_start = now;
+ 
+-	curr->se.exec_start = now;
+-	cgroup_account_cputime(curr, delta_exec);
++	account_group_exec_runtime(currtask, delta_exec);
++	cgroup_account_cputime(currtask, delta_exec);
+ 
+ 	if (!qos_bandwidth_enabled())
+ 		return;
+@@ -873,7 +878,7 @@ static void update_curr_qos(struct rq *rq)
+ 	//prev_perio_runtime
+ #if 0
+ 	for_each_sched_qos_entity(qos_se) {
+-		struct qos_rq *qos_rq = qos_rq_of_se(qos_se);
++		struct qos_rq *qos_rq = qos_rq_by_se(qos_se);
+ 
+ 		if (sched_qos_runtime(qos_rq) != RUNTIME_INF) {
+ 			raw_spin_lock(&qos_rq->qos_runtime_lock);
+@@ -890,7 +895,7 @@ static void update_curr_qos(struct rq *rq)
+ #if 0
+ 	prev_delta_exec = curr->se.sum_exec_runtime - curr->se.prev_sum_exec_runtime;
+ 	if (prev_delta_exec >= 40000000) {
+-		struct qos_rq *qos_rq = qos_rq_of_se(qos_se);
++		struct qos_rq *qos_rq = qos_rq_by_se(qos_se);
+ 		//trace_printk("zz %s %d \n", __func__, __LINE__);
+ 		//resched_curr(rq);
+ 		//if (qos_rq->qos_nr_running > 1)  {
+@@ -912,7 +917,7 @@ static void update_curr_qos(struct rq *rq)
+ 	}
+ #endif
+ 
+-	//MEDEBUG("zz %s %d \n", __func__, __LINE__);
++	MEDEBUG("zz %s %d \n", __func__, __LINE__);
+ }
+ 
+ #ifdef CONFIG_SCHED_SLI
+-- 
+2.43.0
+

@@ -1,0 +1,63 @@
+From 4be2de6edaa5459579d0d17cafa161c5dedc94e7 Mon Sep 17 00:00:00 2001
+From: Zou Cao <zoucaox@outlook.com>
+Date: Mon, 16 Sep 2024 23:12:49 -0400
+Subject: [PATCH 09/10] qos: fixed lost put_prev task in pick next
+
+fixed cfs_rq->curr isn't NULL when first task enqueue, it cause by qos when
+get next qos task lost to put_prev_task, the cfs_rq won't clear cfs_rq->curr,
+cause a panic
+
+Signed-off-by: Zou Cao <zoucaox@outlook.com>
+---
+ kernel/sched/qos.c | 8 ++------
+ 1 file changed, 2 insertions(+), 6 deletions(-)
+
+diff --git a/kernel/sched/qos.c b/kernel/sched/qos.c
+index 67e88d96604e..92c8c94baed5 100644
+--- a/kernel/sched/qos.c
++++ b/kernel/sched/qos.c
+@@ -506,14 +506,12 @@ enqueue_task_qos(struct rq *rq, struct task_struct *p, int flags)
+ #ifdef RQ_PLIST
+ 		plist_node_init(&p->pushable_tasks, p->prio);
+ 		plist_add(&p->pushable_tasks, &rq->qos.pushable_tasks);
+-		//trace_printk("pid %d comm:%s\n", p->pid, p->comm);
+ #else
+ 		enqueue_pushable_task(rq, p);
+ #endif
+ 		qos_se->on_rq = 1;
+ 		inc_qos_tasks(qos_se, qos_rq);
+ 		enqueue_qos_rq(qos_rq);
+-		printk("enqueu rq_runtime:%lx nr:%d cfs:%d-%d qos_nr_running:%d\n", rq->qos.rq_runtime,  rq->nr_running, rq->cfs.h_nr_running, rq->cfs.nr_running, qos_rq->qos_nr_running);
+ 	}
+ 
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
+@@ -533,8 +531,6 @@ static void dequeue_task_qos(struct rq *rq, struct task_struct *p, int flags)
+ 
+ 	update_curr_qos(rq);
+ 
+-	//trace_printk("pid %d comm:%s\n", p->pid, p->comm);
+-	printk("dequeu rq_runtime:%lx nr:%d cfs:%d-%d qos_nr_running:%d\n", rq->qos.rq_runtime,  rq->nr_running, rq->cfs.h_nr_running, rq->cfs.nr_running, qos_rq->qos_nr_running);
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
+ }
+ 
+@@ -616,6 +612,7 @@ pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ 	if (se)  {
+ 		p = task_qos_of(se);
+ 		qos_rq->curr = &p->qos;
++		put_prev_task(rq, prev);
+ 	} else
+ 		qos_rq->curr = NULL;
+ #endif
+@@ -796,8 +793,7 @@ prio_changed_qos(struct rq *rq, struct task_struct *p, int oldprio)
+ static void switched_to_qos(struct rq *rq, struct task_struct *p)
+ {
+ 	if (task_on_rq_queued(p) && rq->curr != p) {
+-		printk("zz %s %d \n", __func__, __LINE__);
+-		//resched_curr(rq);
++		resched_curr(rq);
+ 	}
+ 	MEDEBUG("zz cpu:%d %s %d \n", smp_processor_id(), __func__, __LINE__);
+ }
+-- 
+2.43.0
+
