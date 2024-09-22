@@ -1,0 +1,146 @@
+From b90e45dd3ddf632daa44c5bb2d81f5955faec8be Mon Sep 17 00:00:00 2001
+From: Zou Cao <zoucaox@outlook.com>
+Date: Sun, 22 Sep 2024 06:29:16 -0400
+Subject: [PATCH] qos: add update start exec time
+
+Signed-off-by: Zou Cao <zoucaox@outlook.com>
+---
+ kernel/sched/qos.c | 39 +++++++++++++++++++++++++++++++--------
+ 1 file changed, 31 insertions(+), 8 deletions(-)
+
+diff --git a/kernel/sched/qos.c b/kernel/sched/qos.c
+index de9c8146cb60..c1e5e62e821d 100644
+--- a/kernel/sched/qos.c
++++ b/kernel/sched/qos.c
+@@ -45,6 +45,8 @@ static void switched_to_qos(struct rq *rq, struct task_struct *p);
+ static void update_curr_qos(struct qos_rq *rq);
+ static void dequeue_pushable_task(struct rq *rq, struct task_struct *p);
+ static void enqueue_pushable_task(struct rq *rq, struct task_struct *p);
++static inline void
++update_stats_curr_start(struct qos_rq *qos, struct sched_entity *se);
+ 
+ /*
+  * part of the period that we allow rt tasks to run in us.
+@@ -320,6 +322,7 @@ void init_qos_rq(struct qos_rq *qos_rq)
+ 	qos_rq->qos_throttled = 0;
+ 	qos_rq->qos_runtime = QOS_RT_RUNTIME;
+ 	qos_rq->qos_timeline = RB_ROOT_CACHED;
++	qos_rq->curr = NULL;
+ 	raw_spin_lock_init(&qos_rq->qos_runtime_lock);
+ }
+ 
+@@ -493,8 +496,12 @@ static void
+ enqueue_task_qos(struct rq *rq, struct task_struct *p, int flags)
+ {
+ 	struct sched_qos_entity *qos_se = &p->qos;
++	struct qos_rq *qos_rq = &rq->qos;
++
+ 	//struct qos_rq *group_rq = group_qos_rq(qos_se);
+ 
++	//update_curr_qos(qos_rq);
++
+ 	for_each_sched_qos_entity(qos_se) {
+ 		struct qos_rq *qos_rq = qos_rq_by_se(qos_se);
+ #ifdef RQ_PLIST
+@@ -506,6 +513,7 @@ enqueue_task_qos(struct rq *rq, struct task_struct *p, int flags)
+ 		qos_se->on_rq = 1;
+ 		inc_qos_tasks(qos_se, qos_rq);
+ 		enqueue_qos_rq(qos_rq);
++		update_curr_qos(qos_rq);
+ 	}
+ 
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
+@@ -517,13 +525,13 @@ static void dequeue_task_qos(struct rq *rq, struct task_struct *p, int flags)
+ 	struct sched_qos_entity *qos_se = &p->qos;
+ 	struct qos_rq *qos_rq = qos_rq_by_se(qos_se);
+ 
++
+ 	dequeue_pushable_task(rq, p);
+ 
+ 	dequeue_qos_rq(qos_rq);
+ 	dec_qos_tasks(qos_se, qos_rq);
+ 	qos_se->on_rq = 0;
+ 
+-	update_curr_qos(qos_rq);
+ 
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
+ }
+@@ -576,8 +584,8 @@ pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ 	struct sched_qos_entity *left;
+ 	struct sched_qos_entity *se, *curr;
+ 
+-	if (prev->sched_class == &qos_sched_class)
+-		update_curr_qos(qos_rq);
++	//if (prev->sched_class == &qos_sched_class)
++	//	update_curr_qos(qos_rq);
+ 
+ 	if (!qos_rq->qos_nr_running)
+ 		goto idle;
+@@ -596,6 +604,7 @@ pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ 	}
+ #else
+ 
++
+ 	curr = qos_rq->curr;
+ 	left = __pick_first_entity(qos_rq);
+ 	if (!left || (curr && id_entity_before(curr, left)))
+@@ -604,9 +613,14 @@ pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ 	se = left; /* ideally we run the leftmost entity */
+ 
+ 	if (se)  {
++
++		put_prev_task(rq, prev);
++
+ 		p = task_of_se(se);
+ 		qos_rq->curr = &p->qos;
+-		put_prev_task(rq, prev);
++
++		update_stats_curr_start(qos_rq, &p->se);
++
+ 	} else
+ 		qos_rq->curr = NULL;
+ #endif
+@@ -751,11 +765,11 @@ static void set_curr_task_qos(struct rq *rq)
+ 
+ static void task_tick_qos(struct rq *rq, struct task_struct *p, int queued)
+ {
+-	struct qos_rq *qos_rq;
+-	struct sched_qos_entity *se = &p->qos;
++	struct qos_rq *qos_rq = &rq->qos;
+ 
+ 	//u64 delta = 0;
+ 
++	update_curr_qos(qos_rq);
+ 	//MEDEBUG("zz %s %d \n", __func__, __LINE__);
+ 	//更新 sched balance
+ 	rq->qos.tick_rec_runtime += HZ * 1000000;
+@@ -839,6 +853,17 @@ static int sched_qos_runtime_exceeded(struct qos_rq *qos_rq)
+ }
+ #endif
+ 
++static inline void
++update_stats_curr_start(struct qos_rq *qos, struct sched_entity *se)
++{
++	/*
++	 * We are starting a new run period:
++	 */
++	se->exec_start = rq_clock_task(rq_of_qos_rq(qos));
++	se->exec_start_raw = rq_clock(rq_of_qos_rq(qos));
++	se->prev_sum_exec_runtime = se->sum_exec_runtime;
++}
++
+ static void update_curr_qos(struct qos_rq *qos_rq)
+ {
+ 	struct task_struct *currtask;
+@@ -853,8 +878,6 @@ static void update_curr_qos(struct qos_rq *qos_rq)
+ 
+ 	currtask = task_of_se(qos_rq->curr);
+ 
+-	printk("zz %s utime:%lx +\n",__func__, (unsigned long)currtask->utime);
+-
+ 	now = rq_clock_task(rq_of_qos_rq(qos_rq));
+ 	delta_exec = now - currtask->se.exec_start;
+ 	if (unlikely((s64)delta_exec <= 0))
+-- 
+2.43.0
+
