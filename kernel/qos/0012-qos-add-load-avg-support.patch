@@ -1,0 +1,965 @@
+From dcfd8f4038ebab1621d39e1910352fb2134d1551 Mon Sep 17 00:00:00 2001
+From: zc <zoucaox@outlook.com>
+Date: Mon, 7 Oct 2024 10:35:21 -0400
+Subject: [PATCH] qos: add load avg support
+
+Signed-off-by: zc <zoucaox@outlook.com>
+---
+ include/linux/sched.h |   6 +-
+ kernel/sched/pelt.c   | 149 +++++++++++++-
+ kernel/sched/pelt.h   |   2 +
+ kernel/sched/qos.c    | 450 +++++++++++++++++++++++++++++++++---------
+ kernel/sched/sched.h  |  15 ++
+ 5 files changed, 518 insertions(+), 104 deletions(-)
+
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index d7a4d9688d77..41ecfbdb0743 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -522,21 +522,23 @@ struct sched_entity {
+ };
+ 
+ struct sched_qos_entity {
++	struct load_weight		load;
++	unsigned long			runnable_weight;
+ 	struct list_head		run_list;
+ 	unsigned long			timeout;
+-	unsigned long			watchdog_stamp;
+-	unsigned int			time_slice;
+ 	unsigned short			on_rq;
+ 	unsigned short			on_list;
+ 	struct rb_node			run_node;
+ 	u64						vruntime;
+ 
++
+ 	struct sched_qos_entity		*back;
+ 	struct sched_qos_entity		*parent;
+ 	/* rq on which this entity is (to be) queued: */
+ 	struct qos_rq			*qos_rq;
+ 	/* rq "owned" by this entity/group: */
+ 	struct qos_rq			*my_q;
++	struct sched_avg		avg;
+ } __randomize_layout;
+ 
+ 
+diff --git a/kernel/sched/pelt.c b/kernel/sched/pelt.c
+index e210b82859de..c5770e8966b8 100644
+--- a/kernel/sched/pelt.c
++++ b/kernel/sched/pelt.c
+@@ -29,6 +29,9 @@
+ #include "sched-pelt.h"
+ #include "pelt.h"
+ 
++static __always_inline int
++___update_load_sum_debug(u64 now, int cpu, struct sched_avg *sa,
++		  unsigned long load, unsigned long runnable, int running);
+ /*
+  * Approximate:
+  *   val * y^n,    where y^32 ~= 0.5 (~1 scheduling period)
+@@ -335,14 +338,148 @@ int update_rt_rq_load_avg(u64 now, struct rq *rq, int running)
+ 	return 0;
+ }
+ 
+-int update_qos_rq_load_avg(u64 now, struct rq *rq, int running)
++static __always_inline u32
++accumulate_sum_debug(u64 delta, int cpu, struct sched_avg *sa,
++	       unsigned long load, unsigned long runnable, int running)
+ {
+-	if (___update_load_sum(now, rq->cpu, &rq->avg_qos,
+-				running,
+-				running,
+-				running)) {
++	unsigned long scale_freq, scale_cpu;
++	u32 contrib = (u32)delta; /* p == 0 -> delta < 1024 */
++	u64 periods;
++	u64 sub;
++
++	scale_freq = arch_scale_freq_capacity(cpu);
++	scale_cpu = arch_scale_cpu_capacity(NULL, cpu);
++
++	delta += sa->period_contrib;
++	periods = delta / 1024; /* A period is 1024us (~1ms) */
++#if 0
++	printk("zz %s periods:%ld %ld %ld\n",__func__
++			, (unsigned long)periods
++			, (unsigned long)sa->load_sum 
++			, (unsigned long)sa->runnable_load_sum
++			);
++#endif
++
++	/*
++	 * Step 1: decay old *_sum if we crossed period boundaries.
++	 */
++	if (periods) {
++		u64 old = sa->load_sum;
++		sa->load_sum = decay_load(sa->load_sum, periods);
++		sa->runnable_load_sum =
++			decay_load(sa->runnable_load_sum, periods);
++		sa->util_sum = decay_load((u64)(sa->util_sum), periods);
++		sub = old - sa->load_sum;
++
++		/*
++		 * Step 2
++		 */
++		delta %= 1024;
++		contrib = __accumulate_pelt_segments(periods,
++				1024 - sa->period_contrib, delta);
++		//printk("zz %s load_sum:%ld runnable_load_sum:%ld contrib:%ld %ld \n",__func__
++		//		, (unsigned long)sa->load_sum, (unsigned long)sa->runnable_load_sum, (unsigned long)contrib, sa->period_contrib);
++	}
++	sa->period_contrib = delta;
++
++	contrib = cap_scale(contrib, scale_freq);
++
++	trace_printk("zz %s sub:%ld add:%ld load:%ld runnable:%ld period:%d delta:%ld\n",__func__
++			, periods ? sub : 0, (unsigned long)load * contrib
++			, load, runnable
++			, periods, delta);
++
++	if (load)
++		sa->load_sum += load * contrib;
++	if (runnable)
++		sa->runnable_load_sum += runnable * contrib;
++	if (running)
++		sa->util_sum += contrib * scale_cpu;
++
++	return periods;
++}
++
++
++static __always_inline int
++___update_load_sum_debug(u64 now, int cpu, struct sched_avg *sa,
++		  unsigned long load, unsigned long runnable, int running)
++{
++	u64 delta;
++
++	delta = now - sa->last_update_time;
++	/*
++	 * This should only happen when time goes backwards, which it
++	 * unfortunately does during sched clock init when we swap over to TSC.
++	 */
++	if ((s64)delta < 0) {
++		sa->last_update_time = now;
++		return 0;
++	}
+ 
+-		___update_load_avg(&rq->avg_qos, 1, 1);
++	/*
++	 * Use 1024ns as the unit of measurement since it's a reasonable
++	 * approximation of 1us and fast to compute.
++	 */
++	delta >>= 10;
++	if (!delta)
++		return 0;
++
++	sa->last_update_time += delta << 10;
++
++	/*
++	 * running is a subset of runnable (weight) so running can't be set if
++	 * runnable is clear. But there are some corner cases where the current
++	 * se has been already dequeued but cfs_rq->curr still points to it.
++	 * This means that weight will be 0 but not running for a sched_entity
++	 * but also for a cfs_rq if the latter becomes idle. As an example,
++	 * this happens during idle_balance() which calls
++	 * update_blocked_averages()
++	 */
++	if (!load)
++		runnable = running = 0;
++
++	/*
++	 * Now we know we crossed measurement unit boundaries. The *_avg
++	 * accrues by two steps:
++	 *
++	 * Step 1: accumulate *_sum since last_update_time. If we haven't
++	 * crossed period boundaries, finish.
++	 */
++	if (!accumulate_sum(delta, cpu, sa, load, runnable, running))
++		return 0;
++
++	return 1;
++}
++
++int __update_load_avg_qos_rq(u64 now, int cpu, struct qos_rq *qos_rq)
++{
++	if (___update_load_sum_debug(now, cpu, &qos_rq->avg,
++				scale_load_down(qos_rq->load.weight),
++				scale_load_down(qos_rq->runnable_weight),
++				qos_rq->curr != NULL)) {
++
++		___update_load_avg(&qos_rq->avg, 1, 1);
++		return 1;
++	}
++
++	return 0;
++}
++
++
++int __update_load_avg_se_qos(u64 now, int cpu, struct qos_rq *qos_rq, struct sched_qos_entity *se)
++{
++	if (entity_is_task(se))
++		se->runnable_weight = se->load.weight;
++
++	if (___update_load_sum(now, cpu, &se->avg, !!se->on_rq, !!se->on_rq,
++				qos_rq->curr == se)) {
++
++		___update_load_avg(&se->avg, se_qos_weight(se), se_qos_runnable(se));
++#if 0
++		trace_printk("%s load_sum:%lld runnable_load_sum:%lld avg.load_avg:%lld -\n", 
++				__func__, se->avg.load_sum, se->avg.runnable_load_sum
++				, se->avg.load_avg);
++#endif
+ 		return 1;
+ 	}
+ 
+diff --git a/kernel/sched/pelt.h b/kernel/sched/pelt.h
+index 7e56b489ff32..10a7a1d50cfc 100644
+--- a/kernel/sched/pelt.h
++++ b/kernel/sched/pelt.h
+@@ -3,6 +3,8 @@
+ int __update_load_avg_blocked_se(u64 now, int cpu, struct sched_entity *se);
+ int __update_load_avg_se(u64 now, int cpu, struct cfs_rq *cfs_rq, struct sched_entity *se);
+ int __update_load_avg_cfs_rq(u64 now, int cpu, struct cfs_rq *cfs_rq);
++int __update_load_avg_se_qos(u64 now, int cpu, struct qos_rq *qos_rq, struct sched_qos_entity *se);
++int __update_load_avg_qos_rq(u64 now, int cpu, struct qos_rq *qos_rq);
+ int update_rt_rq_load_avg(u64 now, struct rq *rq, int running);
+ int update_dl_rq_load_avg(u64 now, struct rq *rq, int running);
+ 
+diff --git a/kernel/sched/qos.c b/kernel/sched/qos.c
+index c1e5e62e821d..2f8be43404c5 100644
+--- a/kernel/sched/qos.c
++++ b/kernel/sched/qos.c
+@@ -6,6 +6,7 @@
+ #include "sched.h"
+ 
+ #include "pelt.h"
++#include "sched-pelt.h"
+ 
+ #define DEBUGLEVE 3
+ 
+@@ -43,10 +44,25 @@ static void update_nr_uninterruptible_qos(struct task_struct *p, long inc);
+ static void prio_changed_qos(struct rq *rq, struct task_struct *p, int oldprio);
+ static void switched_to_qos(struct rq *rq, struct task_struct *p);
+ static void update_curr_qos(struct qos_rq *rq);
+-static void dequeue_pushable_task(struct rq *rq, struct task_struct *p);
+-static void enqueue_pushable_task(struct rq *rq, struct task_struct *p);
++static void dequeue_pushable_task(struct rq *rq, struct sched_qos_entity *se_qos);
++static void enqueue_pushable_task(struct rq *rq, struct sched_qos_entity *se_qos);
+ static inline void
+ update_stats_curr_start(struct qos_rq *qos, struct sched_entity *se);
++static void _dequeue_pushable_task(struct rq *rq, struct sched_qos_entity *se_qos);
++static inline void update_se_load_avg(struct qos_rq *qos_rq, struct sched_qos_entity *se, int flags);
++
++
++static unsigned int sched_nr_latency = 8;
++
++#define sub_positive(_ptr, _val) do {				\
++	typeof(_ptr) ptr = (_ptr);				\
++	typeof(*ptr) val = (_val);				\
++	typeof(*ptr) res, var = READ_ONCE(*ptr);		\
++	res = var - val;					\
++	if (res > var)						\
++		res = 0;					\
++	WRITE_ONCE(*ptr, res);					\
++} while (0)
+ 
+ /*
+  * part of the period that we allow rt tasks to run in us.
+@@ -62,6 +78,15 @@ update_stats_curr_start(struct qos_rq *qos, struct sched_entity *se);
+ #define ID_UNDERCLASS		0x0001
+ #define ID_HIGHCLASS		0x0002
+ 
++#define UPDATE_TG	0x1
++#define SKIP_AGE_LOAD	0x2
++#define DO_ATTACH	0x4
++
++static inline struct qos_rq *qos_rq_of_se(struct sched_qos_entity *se)
++{
++	return se->qos_rq;
++}
++
+ static inline struct task_struct *task_of_se(struct sched_qos_entity *se)
+ {
+ 	return container_of(se, struct task_struct, qos);
+@@ -105,6 +130,75 @@ static inline int qos_bandwidth_enabled(void)
+ 	return 1;
+ }
+ 
++static inline void
++enqueue_runnable_load_avg(struct qos_rq *qos_rq, struct sched_qos_entity *se)
++{
++	qos_rq->runnable_weight += se->runnable_weight;
++
++	qos_rq->avg.runnable_load_avg += se->avg.runnable_load_avg;
++	qos_rq->avg.runnable_load_sum += se_qos_runnable(se) * se->avg.runnable_load_sum;
++}
++
++static inline void
++dequeue_runnable_load_avg(struct qos_rq *qos_rq, struct sched_qos_entity *se)
++{
++	qos_rq->runnable_weight -= se->runnable_weight;
++
++	sub_positive(&qos_rq->avg.runnable_load_avg, se->avg.runnable_load_avg);
++	sub_positive(&qos_rq->avg.runnable_load_sum,
++		     se_qos_runnable(se) * se->avg.runnable_load_sum);
++}
++static inline void
++enqueue_load_avg(struct qos_rq *qos_rq, struct sched_qos_entity *se)
++{
++	qos_rq->avg.load_avg += se->avg.load_avg;
++	qos_rq->avg.load_sum += se_qos_weight(se) * se->avg.load_sum;
++}
++
++static inline void
++dequeue_load_avg(struct qos_rq *qos_rq, struct sched_qos_entity *se)
++{
++	sub_positive(&qos_rq->avg.load_avg, se->avg.load_avg);
++	sub_positive(&qos_rq->avg.load_sum, se_qos_weight(se) * se->avg.load_sum);
++}
++
++static inline void update_load_add(struct load_weight *lw, unsigned long inc)
++{
++	BUG_ON(lw->weight < 0);
++	lw->weight += inc;
++	lw->inv_weight = 0;
++}
++
++static inline void update_load_sub(struct load_weight *lw, unsigned long dec)
++{
++	lw->weight -= dec;
++	lw->inv_weight = 0;
++}
++
++static inline void update_load_set(struct load_weight *lw, unsigned long w)
++{
++	lw->weight = w;
++	lw->inv_weight = 0;
++}
++
++static inline u64 max_vruntime(u64 max_vruntime, u64 vruntime)
++{
++	s64 delta = (s64)(vruntime - max_vruntime);
++	if (delta > 0)
++		max_vruntime = vruntime;
++
++	return max_vruntime;
++}
++
++static inline u64 min_vruntime(u64 min_vruntime, u64 vruntime)
++{
++	s64 delta = (s64)(vruntime - min_vruntime);
++	if (delta < 0)
++		min_vruntime = vruntime;
++
++	return min_vruntime;
++}
++
+ static u64 __calc_delta(u64 delta_exec, unsigned long weight, struct load_weight *lw)
+ {
+ 	u64 fact = scale_load_down(weight);
+@@ -137,6 +231,20 @@ static inline u64 calc_delta_qos(u64 delta, struct sched_entity *se)
+ 	return delta;
+ }
+ 
++static void rb_tree_dump(const struct rb_root_cached *rb_root)
++{
++	struct sched_qos_entity *node, *next_node;
++
++    for (node = rb_entry_safe(rb_first_cached(rb_root), typeof(*node), run_node);
++        node && ({ next_node = rb_entry_safe(rb_next_postorder(&node->run_node),
++        typeof(*node), run_node);});
++        node = next_node) {
++        printk("zz %s node:%lx \n",__func__, (unsigned long)node);
++    }
++	//return rb_entry(left, struct sched_qos_entity, run_node);
++}
++
++
+ static enum hrtimer_restart sched_qos_period_timer(struct hrtimer *timer)
+ {
+ 	struct qos_bandwidth *qos_b =
+@@ -205,7 +313,6 @@ const struct sched_class qos_sched_class = {
+ 	.task_woken		= task_woken_qos,
+ 	.switched_from		= switched_from_qos,
+ #endif
+-
+ 	.set_curr_task          = set_curr_task_qos,
+ 	.task_tick		= task_tick_qos,
+ 
+@@ -449,44 +556,33 @@ static inline int qos_rq_throttled(struct qos_rq *qos_rq)
+ }
+ 
+ static void
+-dequeue_qos_rq(struct qos_rq *qos_rq)
++dequeue_qos_rq(struct qos_rq *qos_rq, struct sched_qos_entity *se_qos)
+ {
+ 	struct rq *rq = rq_of_qos_rq(qos_rq);
+-	sub_nr_running(rq, 1);
+-#if 0
+-
+-	BUG_ON(&rq->qos != qos_rq);
+-
+-	if (!qos_rq->qos_queued)
+-		return;
+-
+-	//BUG_ON(!rq->nr_running);
+ 
+-	sub_nr_running(rq, qos_rq->qos_nr_running);
+-	qos_rq->qos_queued = 0;
+-#endif
++	dequeue_pushable_task(rq, se_qos);
+ 
++	update_load_sub(&qos_rq->load, se_qos->load.weight);
++	sub_nr_running(rq, 1);
+ }
+ 
+ static void
+-enqueue_qos_rq(struct qos_rq *qos_rq)
++enqueue_qos_rq(struct qos_rq *qos_rq, struct sched_qos_entity *se_qos)
+ {
+ 	struct rq *rq = rq_of_qos_rq(qos_rq);
+ 	
+-	add_nr_running(rq, 1);
+-#if 0
+-	if (qos_rq->qos_queued)
+-		return;
++#ifdef RQ_PLIST
++	plist_node_init(&p->pushable_tasks, p->prio);
++	plist_add(&p->pushable_tasks, &rq->qos.pushable_tasks);
++#else
++	enqueue_pushable_task(rq, se_qos);
++#endif
+ 
+-	if (qos_rq_throttled(qos_rq))
+-		return;
++	se_qos->on_rq = 1;
++	inc_qos_tasks(se_qos, qos_rq);
+ 
+-	if (qos_rq->qos_nr_running) {
+-		//add_nr_running(rq, qos_rq->qos_nr_running);
+-		add_nr_running(rq, qos_nr_running);
+-		qos_rq->qos_queued = 1;
+-	}
+-#endif
++	update_load_add(&qos_rq->load, se_qos->load.weight);
++	add_nr_running(rq, 1);
+ }
+ 
+ /*
+@@ -495,45 +591,31 @@ enqueue_qos_rq(struct qos_rq *qos_rq)
+ static void
+ enqueue_task_qos(struct rq *rq, struct task_struct *p, int flags)
+ {
+-	struct sched_qos_entity *qos_se = &p->qos;
++	struct sched_qos_entity *se_qos = &p->qos;
+ 	struct qos_rq *qos_rq = &rq->qos;
+ 
+-	//struct qos_rq *group_rq = group_qos_rq(qos_se);
+-
+-	//update_curr_qos(qos_rq);
+-
+-	for_each_sched_qos_entity(qos_se) {
+-		struct qos_rq *qos_rq = qos_rq_by_se(qos_se);
+-#ifdef RQ_PLIST
+-		plist_node_init(&p->pushable_tasks, p->prio);
+-		plist_add(&p->pushable_tasks, &rq->qos.pushable_tasks);
+-#else
+-		enqueue_pushable_task(rq, p);
+-#endif
+-		qos_se->on_rq = 1;
+-		inc_qos_tasks(qos_se, qos_rq);
+-		enqueue_qos_rq(qos_rq);
++	for_each_sched_qos_entity(se_qos) {
++		enqueue_qos_rq(qos_rq, se_qos);
+ 		update_curr_qos(qos_rq);
+-	}
+ 
+-	MEDEBUG("zz %s %d \n", __func__, __LINE__);
++		MEDEBUG("zz %s %d load_sum:%lld runnable_load_sum:%lld\n", __func__, __LINE__
++				,se_qos->avg.load_sum, se_qos->avg.runnable_load_sum
++				);
++	}
+ }
+ 
+ 
+ static void dequeue_task_qos(struct rq *rq, struct task_struct *p, int flags)
+ {
+-	struct sched_qos_entity *qos_se = &p->qos;
+-	struct qos_rq *qos_rq = qos_rq_by_se(qos_se);
+-
+-
+-	dequeue_pushable_task(rq, p);
+-
+-	dequeue_qos_rq(qos_rq);
+-	dec_qos_tasks(qos_se, qos_rq);
+-	qos_se->on_rq = 0;
++	struct sched_qos_entity *se_qos = &p->qos;
++	struct qos_rq *qos_rq = qos_rq_by_se(se_qos);
+ 
++	dequeue_qos_rq(qos_rq, se_qos);
++	dec_qos_tasks(se_qos, qos_rq);
++	se_qos->on_rq = 0;
+ 
+-	MEDEBUG("zz %s %d \n", __func__, __LINE__);
++	MEDEBUG("zz %s %d load_sum:%lld runnable_load_sum:%lld\n", __func__, __LINE__
++			,se_qos->avg.load_sum, se_qos->avg.runnable_load_sum);
+ }
+ 
+ static void yield_task_qos(struct rq *rq)
+@@ -584,9 +666,6 @@ pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ 	struct sched_qos_entity *left;
+ 	struct sched_qos_entity *se, *curr;
+ 
+-	//if (prev->sched_class == &qos_sched_class)
+-	//	update_curr_qos(qos_rq);
+-
+ 	if (!qos_rq->qos_nr_running)
+ 		goto idle;
+ 
+@@ -600,12 +679,17 @@ pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ 		put_prev_task(rq, prev);
+ 		p->se.exec_start = rq_clock_task(rq);
+ 		p->se.prev_sum_exec_runtime = p->se.sum_exec_runtime;
+-		//printk("zz %d %ld pid:%d nr:%d %d\n", __LINE__, rq->qos.rq_runtime, p->pid, rq->nr_running, rq->cfs.h_nr_running);
+ 	}
+ #else
++	curr = qos_rq->curr;
+ 
++	if (curr) {
++		if (curr->on_rq)
++			update_curr_qos(qos_rq);
++		else
++			curr = NULL;
++	}
+ 
+-	curr = qos_rq->curr;
+ 	left = __pick_first_entity(qos_rq);
+ 	if (!left || (curr && id_entity_before(curr, left)))
+ 		left = curr;
+@@ -616,6 +700,12 @@ pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ 
+ 		put_prev_task(rq, prev);
+ 
++		if (se->on_rq) {
++			_dequeue_pushable_task(rq, se);
++			//rb_tree_dump(&qos_rq->qos_timeline);
++			update_se_load_avg(qos_rq, se, UPDATE_TG);
++		}
++
+ 		p = task_of_se(se);
+ 		qos_rq->curr = &p->qos;
+ 
+@@ -625,9 +715,8 @@ pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ 		qos_rq->curr = NULL;
+ #endif
+ 
+-	//if (smp_processor_id() == 1)
+-	//	trace_printk(" %d\n", __LINE__);
+-	//MEDEBUG("zz %s %d %s %lx\n", __func__, __LINE__, current->comm, p);
++	MEDEBUG("zz %s %d %lx %d %lx\n", __func__, __LINE__, (unsigned long)se, qos_rq->qos_nr_running, qos_rq->curr);
++			
+ idle:
+ 	return p;
+ }
+@@ -638,14 +727,13 @@ static inline int on_qos_rq(struct sched_qos_entity *qos_se)
+ 	//return !RB_EMPTY_NODE(&qos_se->run_node);
+ }
+ 
+-static void enqueue_pushable_task(struct rq *rq, struct task_struct *p)
++static void _enqueue_pushable_task(struct rq *rq, struct sched_qos_entity *se_qos)
+ {
+ #ifdef RQ_PLIST
+ 	plist_del(&p->pushable_tasks, &rq->qos.pushable_tasks);
+ 	plist_node_init(&p->pushable_tasks, p->prio);
+ 	plist_add(&p->pushable_tasks, &rq->qos.pushable_tasks);
+ #else
+-	struct sched_qos_entity *se;
+ 	struct rb_root_cached *root;
+ 	struct rb_node **link;
+ 	struct rb_node *parent = NULL;
+@@ -654,8 +742,7 @@ static void enqueue_pushable_task(struct rq *rq, struct task_struct *p)
+ 
+ 	bool leftmost = true;
+ 
+-	se = &p->qos;
+-	root = qos_id_rb_root(qos_rq, se);
++	root = qos_id_rb_root(qos_rq, se_qos);
+ 	link = &root->rb_root.rb_node;
+ 
+ 	/*
+@@ -668,7 +755,7 @@ static void enqueue_pushable_task(struct rq *rq, struct task_struct *p)
+ 		 * We dont care about collisions. Nodes with
+ 		 * the same key stay together.
+ 		 */
+-		if (entity_before(se, entry)) {
++		if (entity_before(se_qos, entry)) {
+ 			link = &parent->rb_left;
+ 		} else {
+ 			link = &parent->rb_right;
+@@ -676,39 +763,122 @@ static void enqueue_pushable_task(struct rq *rq, struct task_struct *p)
+ 		}
+ 	}
+ 
+-	rb_link_node(&se->run_node, parent, link);
+-	rb_insert_color_cached(&se->run_node, root, leftmost);
++	rb_link_node(&se_qos->run_node, parent, link);
++	rb_insert_color_cached(&se_qos->run_node, root, leftmost);
+ #endif
++	//rb_tree_dump(root);
+ }
+ 
+-static void dequeue_pushable_task(struct rq *rq, struct task_struct *p)
++static void _dequeue_pushable_task(struct rq *rq, struct sched_qos_entity *se_qos)
+ {
+ #ifdef RQ_PLIST
+ 	plist_del(&p->pushable_tasks, &rq->qos.pushable_tasks);
+ 	plist_node_init(&p->pushable_tasks, p->prio);
+ #else
+-	struct sched_qos_entity *qos_se = &p->qos;
+-	struct qos_rq *qos_rq = qos_rq_by_se(qos_se);
++	struct qos_rq *qos_rq = qos_rq_by_se(se_qos);
+ 	struct rb_root_cached *root;
+-	root = qos_id_rb_root(qos_rq, qos_se);
++	root = qos_id_rb_root(qos_rq, se_qos);
+ 
+-	rb_erase_cached(&p->qos.run_node, qos_id_rb_root(qos_rq, &p->qos));
++	rb_erase_cached(&se_qos->run_node, qos_id_rb_root(qos_rq, se_qos));
+ #endif
+ }
+ 
++static void attach_entity_load_avg(struct qos_rq *qos_rq, struct sched_qos_entity *se, int flags)
++{
++	u32 divider = LOAD_AVG_MAX - 1024 + qos_rq->avg.period_contrib;
++	//se->avg.last_update_time = qos_rq->avg.last_update_time;
++	se->avg.last_update_time = rq_clock_task(rq_of_qos_rq(qos_rq));
++
++	se->avg.period_contrib = qos_rq->avg.period_contrib;
++	se->avg.util_sum = se->avg.util_avg * divider;
++
++	se->avg.load_sum = divider;
++
++	if (se_qos_weight(se)) {
++		se->avg.load_sum =
++			div_u64(se->avg.load_avg * se->avg.load_sum, se_qos_weight(se));
++	}
++
++	se->avg.runnable_load_sum = se->avg.load_sum;
++}
++
++static void detach_entity_load_avg(struct qos_rq *qos_rq, struct sched_qos_entity *se)
++{
++	dequeue_load_avg(qos_rq, se);
++	sub_positive(&qos_rq->avg.util_avg, se->avg.util_avg);
++	sub_positive(&qos_rq->avg.util_sum, se->avg.util_sum);
++
++	//add_tg_qos_propagate(qos_rq, -se->avg.load_sum);
++
++	//qos_rq_util_change(qos_rq, 0);
++}
++
++static inline int
++update_qos_rq_load_avg(u64 now, struct qos_rq *qos_rq)
++{
++	struct sched_avg *sa = &qos_rq->avg;
++	int decayed = 0;
++
++	decayed |= __update_load_avg_qos_rq(now, cpu_of(rq_of_qos_rq(qos_rq)), qos_rq);
++	smp_wmb();
++
++	return decayed;
++}
++
++static inline void update_se_load_avg(struct qos_rq *qos_rq, struct sched_qos_entity *se, int flags)
++{
++	struct rq *rq = rq_of_qos_rq(qos_rq);
++	u64 now = rq_clock_task(rq_of_qos_rq(qos_rq));
++	int cpu = cpu_of(rq);
++
++	if (se->avg.last_update_time)
++		__update_load_avg_se_qos(now, cpu, qos_rq, se);
++	else {
++		attach_entity_load_avg(qos_rq, se, 0);
++	}
++
++	update_qos_rq_load_avg(now, qos_rq);
++}
++
++static void enqueue_pushable_task(struct rq *rq, struct sched_qos_entity *se_qos)
++{
++	struct qos_rq *qos_rq = &rq->qos;
++	bool curr = qos_rq->curr == se_qos;
++
++	update_se_load_avg(qos_rq, se_qos, UPDATE_TG | DO_ATTACH);
++	if (!curr)
++		_enqueue_pushable_task(rq, se_qos);
++}
++
++static void dequeue_pushable_task(struct rq *rq, struct sched_qos_entity *se_qos)
++{
++	struct qos_rq *qos_rq = &rq->qos;
++	bool curr = qos_rq->curr == se_qos;
++
++	update_se_load_avg(qos_rq, se_qos, UPDATE_TG);
++	if (!curr)
++		_dequeue_pushable_task(rq, se_qos);
++}
++
+ static void put_prev_task_qos(struct rq *rq, struct task_struct *p)
+ {
+-	struct sched_qos_entity *qos_se = &p->qos;
++	struct sched_qos_entity *se_qos= &p->qos;
+ 	struct qos_rq *qos_rq = &rq->qos;
+ 	
+-	if (on_qos_rq(qos_se)) {
+-		//enqueue_pushable_task(rq, p);
++	if (on_qos_rq(se_qos)) {
+ 		update_curr_qos(qos_rq);
+ 	}
+ 
++	if (se_qos->on_rq) {
++		if (qos_rq->curr == se_qos)
++			_enqueue_pushable_task(rq, se_qos);
++		update_se_load_avg(qos_rq, se_qos, 0);
++	}
++
+ 	qos_rq->curr = NULL;
+ 
+-	MEDEBUG("zz %s %d \n", __func__, __LINE__);
++	MEDEBUG("zz %s %d load_sum:%lld runnable_load_sum:%lld\n", __func__, __LINE__
++			,se_qos->avg.load_sum, se_qos->avg.runnable_load_sum);
+ }
+ 
+ /* Assumes rq->lock is held */
+@@ -727,6 +897,7 @@ static void rq_offline_qos(struct rq *rq)
+ static void task_woken_qos(struct rq *rq, struct task_struct *p)
+ {
+ #if 0
++	struct qos_rq *qos_rq = &rq->qos;
+ 	if (!task_running(rq, p) &&
+ 	    !test_tsk_need_resched(rq->curr) &&
+ 	    p->nr_cpus_allowed > 1 &&
+@@ -753,9 +924,6 @@ static void switched_from_qos(struct rq *rq, struct task_struct *p)
+ 
+ static void set_curr_task_qos(struct rq *rq)
+ {
+-	//struct task_struct *p = rq->curr;
+-
+-	//plist_del(&p->pushable_tasks, &rq->qos.pushable_tasks);
+ 
+ 	//p->se.exec_start = rq_clock_task(rq);
+ 
+@@ -763,31 +931,85 @@ static void set_curr_task_qos(struct rq *rq)
+ 	MEDEBUG("zz %s %d \n", __func__, __LINE__);
+ }
+ 
++static u64 __sched_period(unsigned long nr_running)
++{
++	if (unlikely(nr_running > sched_nr_latency))
++		return nr_running * sysctl_sched_min_granularity;
++	else
++		return sysctl_sched_latency;
++}
++
++static u64 sched_slice(struct qos_rq *qos_rq, struct sched_qos_entity *se)
++{
++	u64 slice = __sched_period(qos_rq->qos_nr_running + !se->on_rq);
++
++	struct load_weight *load;
++	struct load_weight lw;
++
++	load = &qos_rq->load;
++
++	if (unlikely(!se->on_rq)) {
++		lw = qos_rq->load;
++
++		update_load_add(&lw, se->load.weight);
++		load = &lw;
++	}
++	slice = __calc_delta(slice, se->load.weight, load);
++	return slice;
++}
++
++static void
++check_preempt_tick(struct qos_rq *qos_rq, struct sched_qos_entity *curr)
++{
++	unsigned long ideal_runtime, delta_exec;
++	struct sched_qos_entity *qos_se;
++	struct sched_entity *se;
++	s64 delta;
++	struct task_struct *currtask;
++
++	currtask = task_of_se(curr);
++	se = &currtask->se;
++	ideal_runtime = sched_slice(qos_rq, curr);
++	delta_exec = se->sum_exec_runtime - se->prev_sum_exec_runtime;
++	if (delta_exec > ideal_runtime) {
++		resched_curr(rq_of_qos_rq(qos_rq));
++		return;
++	}
++
++	qos_se = __pick_first_entity(qos_rq);
++	if (!qos_se)
++		return;
++
++	delta = id_vruntime(curr) - id_vruntime(qos_se);
++
++	if (delta < 0)
++		return;
++
++	if (delta > ideal_runtime) {
++		resched_curr(rq_of_qos_rq(qos_rq));
++	}
++}
++
+ static void task_tick_qos(struct rq *rq, struct task_struct *p, int queued)
+ {
+ 	struct qos_rq *qos_rq = &rq->qos;
+-
+-	//u64 delta = 0;
++	struct sched_qos_entity *se_qos = &p->qos;
+ 
+ 	update_curr_qos(qos_rq);
+-	//MEDEBUG("zz %s %d \n", __func__, __LINE__);
++	update_se_load_avg(qos_rq, se_qos, UPDATE_TG);
++
++	if (qos_rq->qos_nr_running > 1)
++		check_preempt_tick(qos_rq, &p->qos);
++
+ 	//更新 sched balance
+ 	rq->qos.tick_rec_runtime += HZ * 1000000;
+ 
+-	//update_curr_qos(&rq->qos);
+-
+ 	if (rq->qos.rq_runtime > QOS_RT_RUNTIME) {
+ 		
+ 	}
+-	//trace_printk("zz %s delta:%ld HZ:%ld\n",__func__, (unsigned long)delta , HZ);
+ 
+ 	//update_qos_rq_load_avg(rq_clock_task(rq), rq, 1);
+ 
+-	//watchdog(rq, p);
+-
+-	if (p->policy != SCHED_RR)
+-		return;
+-
+ }
+ 
+ static unsigned int get_rr_interval_qos(struct rq *rq, struct task_struct *task)
+@@ -808,9 +1030,17 @@ prio_changed_qos(struct rq *rq, struct task_struct *p, int oldprio)
+ 
+ static void switched_to_qos(struct rq *rq, struct task_struct *p)
+ {
++	struct sched_qos_entity *se_qos = &p->qos;
++	struct qos_rq *qos_rq = &rq->qos;
++
++	se_qos->vruntime = qos_rq->min_vruntime;
++	update_load_set(&se_qos->load, NICE_0_LOAD);
++	update_load_add(&qos_rq->load, se_qos->load.weight);
++
+ 	if (task_on_rq_queued(p) && rq->curr != p) {
+ 		resched_curr(rq);
+ 	}
++
+ 	MEDEBUG("zz cpu:%d %s %d \n", smp_processor_id(), __func__, __LINE__);
+ }
+ 
+@@ -853,6 +1083,32 @@ static int sched_qos_runtime_exceeded(struct qos_rq *qos_rq)
+ }
+ #endif
+ 
++static void update_min_vruntime(struct qos_rq *qos_rq)
++{
++	struct sched_qos_entity *curr = qos_rq->curr;
++	struct rb_node *leftmost = rb_first_cached(&qos_rq->qos_timeline);
++	u64 vruntime = qos_rq->min_vruntime;
++
++	if (curr) {
++		if (curr->on_rq)
++			vruntime = curr->vruntime;
++		else
++			curr = NULL;
++	}
++
++	if (leftmost) { /* non-empty tree */
++		struct sched_qos_entity *se;
++		se = rb_entry(leftmost, struct sched_qos_entity, run_node);
++
++		if (!curr)
++			vruntime = se->vruntime;
++		else
++			vruntime = min_vruntime(vruntime, se->vruntime);
++	}
++
++	qos_rq->min_vruntime = max_vruntime(qos_rq->min_vruntime, vruntime);
++}
++
+ static inline void
+ update_stats_curr_start(struct qos_rq *qos, struct sched_entity *se)
+ {
+@@ -892,6 +1148,8 @@ static void update_curr_qos(struct qos_rq *qos_rq)
+ 	currtask->qos.vruntime += calc_delta_qos(delta_exec, &currtask->se);
+ 	currtask->se.exec_start = now;
+ 
++	update_min_vruntime(qos_rq);
++
+ 	account_group_exec_runtime(currtask, delta_exec);
+ 	cgroup_account_cputime(currtask, delta_exec);
+ 
+@@ -940,7 +1198,7 @@ static void update_curr_qos(struct qos_rq *qos_rq)
+ 	}
+ #endif
+ 
+-	MEDEBUG("zz %s %d \n", __func__, __LINE__);
++	//MEDEBUG("zz %s %d \n", __func__, __LINE__);
+ }
+ 
+ #ifdef CONFIG_SCHED_SLI
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index 220585d625d2..d324c1840c86 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -710,6 +710,8 @@ struct rt_rq {
+ 
+ /* Real-Time classes' related field in a runqueue: */
+ struct qos_rq {
++	struct load_weight	load;
++	unsigned long		runnable_weight;
+ 	unsigned int		qos_nr_running;
+ 	unsigned int		rr_nr_running;
+ 	struct {
+@@ -728,6 +730,7 @@ struct qos_rq {
+ 	int			qos_queued;
+ 
+ 	int			qos_throttled;
++	u64			min_vruntime;
+ 	u64			qos_time;
+ 	u64			qos_runtime;
+ 	/* Nests inside the rq lock: */
+@@ -740,6 +743,7 @@ struct qos_rq {
+ 
+ 	struct rb_root_cached	qos_timeline;
+ 	struct sched_qos_entity	*curr;
++	struct sched_avg	avg;
+ 
+ 	unsigned long nr_uninterruptible;
+ 	unsigned long rq_runtime;
+@@ -817,6 +821,17 @@ struct dl_rq {
+ #endif
+ 
+ #ifdef CONFIG_SMP
++static inline long se_qos_weight(struct sched_qos_entity *se)
++{
++	return scale_load_down(se->load.weight);
++}
++
++static inline long se_qos_runnable(struct sched_qos_entity *se)
++{
++	return scale_load_down(se->runnable_weight);
++}
++
++
+ /*
+  * XXX we want to get rid of these helpers and use the full load resolution.
+  */
+-- 
+2.34.1
+
