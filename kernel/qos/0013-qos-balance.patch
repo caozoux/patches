@@ -1,0 +1,780 @@
+From ce3ef048f80ddb041662cd826204316e504b8d8c Mon Sep 17 00:00:00 2001
+From: zc <zoucaox@outlook.com>
+Date: Sat, 5 Jul 2025 09:26:14 +0800
+Subject: [PATCH] qos balance
+
+---
+ kernel/sched/core.c |   4 +-
+ kernel/sched/fair.c |  24 ++-
+ kernel/sched/pelt.c |  14 ++
+ kernel/sched/pelt.h |   1 +
+ kernel/sched/qos.c  | 511 +++++++++++++++++++++++++++++++++++++++++++-
+ 5 files changed, 541 insertions(+), 13 deletions(-)
+
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 1b4f93afc545..e11c8a3f8b98 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -2321,8 +2321,9 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
+ 	}
+ 
+ 	if (qos_prio(p->prio)) {
++		struct sched_qos_entity *se = &p->qos;
+ 		p->sched_class = &qos_sched_class;
+-		printk("Info qos fork\n");
++		printk("Info qos fork %lx %lx\n", se->runnable_weight, se->load.weight);
+ 	} else if (dl_prio(p->prio))
+ 		return -EAGAIN;
+ 	else if (rt_prio(p->prio))
+@@ -4123,6 +4124,7 @@ static void __setscheduler_params(struct task_struct *p,
+ 
+ 		p->qos_priority = attr->sched_priority;
+ 		load->weight = scale_load(sched_prio_to_weight[21]);
++		p->qos.runnable_weight = scale_load(sched_prio_to_weight[21]);
+ 		load->inv_weight = sched_prio_to_wmult[21];
+ 	} else if (fair_policy(policy))
+ 		p->static_prio = NICE_TO_PRIO(attr->sched_nice);
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index 755d61789f9e..dcef2f569a78 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -4993,17 +4993,33 @@ static inline void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
+ 	struct rq *rq = rq_of(cfs_rq);
+ 	int cpu = cpu_of(rq);
+ 	int decayed;
++	struct task_struct *p = NULL;
++	u64 last_update_time = se->avg.last_update_time;
++
++	if (entity_is_task(se))
++		p = task_of(se);
+ 
+ 	/*
+ 	 * Track task load average for carrying it to new CPU after migrated, and
+ 	 * track group sched_entity load average for task_h_load calc in migration
+ 	 */
+-	if (se->avg.last_update_time && !(flags & SKIP_AGE_LOAD))
++	if (se->avg.last_update_time && !(flags & SKIP_AGE_LOAD)) {
+ 		__update_load_avg_se(now, cpu, cfs_rq, se);
++		if (!strcmp(p->comm, "sched_test"))
++			trace_printk("zz %s load_sum:%ld runnable_load_sum:%ld delta:%lld \n",__func__
++					, (unsigned long)se->avg.load_sum, (unsigned long)se->avg.runnable_load_sum
++					, se->avg.last_update_time - last_update_time);
++	}
+ 
+ 	decayed  = update_cfs_rq_load_avg(now, cfs_rq);
+ 	decayed |= propagate_entity_load_avg(se);
+ 
++	if (p && !strcmp(p->comm, "sched_test"))
++		trace_printk("zz %s load_sum:%ld runnable_load_sum:%ld  cfs_weight:%ld runabble:%ld delta:%lld \n",__func__
++				, (unsigned long)cfs_rq->avg.load_sum, (unsigned long)se->avg.runnable_load_sum
++				, (unsigned long)cfs_rq->load.weight, (unsigned long)cfs_rq->runnable_weight
++				, se->avg.last_update_time - last_update_time);
++
+ 	if (!se->avg.last_update_time && (flags & DO_ATTACH)) {
+ 
+ 		/*
+@@ -8864,9 +8880,12 @@ static bool __update_blocked_others(struct rq *rq, bool *done)
+ 	 */
+ 	curr_class = rq->curr->sched_class;
+ 
++
+ 	decayed = update_rt_rq_load_avg(now, rq, curr_class == &rt_sched_class) |
+ 		  update_dl_rq_load_avg(now, rq, curr_class == &dl_sched_class) |
+-		  update_irq_load_avg(rq, 0);
++		   update_irq_load_avg(rq, 0);
++		  
++	update_load_avg_qos_rq(now, rq);
+ 
+ 	if (others_have_blocked(rq))
+ 		*done = false;
+@@ -9090,6 +9109,7 @@ static void update_blocked_averages(int cpu)
+ 
+ 	decayed |= __update_blocked_others(rq, &done);
+ 	decayed |= __update_blocked_fair(rq, &done);
++	
+ 
+ #ifdef CONFIG_NO_HZ_COMMON
+ 	rq->last_blocked_load_update_tick = jiffies;
+diff --git a/kernel/sched/pelt.c b/kernel/sched/pelt.c
+index c5770e8966b8..f12918d938de 100644
+--- a/kernel/sched/pelt.c
++++ b/kernel/sched/pelt.c
+@@ -451,6 +451,20 @@ ___update_load_sum_debug(u64 now, int cpu, struct sched_avg *sa,
+ 	return 1;
+ }
+ 
++int update_load_avg_qos_rq(u64 now, struct rq *rq)
++{
++	if (___update_load_sum_debug(now, rq->cpu, &rq->qos.avg,
++				scale_load_down(rq->qos.load.weight),
++				scale_load_down(rq->qos.runnable_weight),
++				rq->qos.curr != NULL)) {
++
++		___update_load_avg(&rq->qos.avg, 1, 1);
++		return 1;
++	}
++
++	return 0;
++}
++
+ int __update_load_avg_qos_rq(u64 now, int cpu, struct qos_rq *qos_rq)
+ {
+ 	if (___update_load_sum_debug(now, cpu, &qos_rq->avg,
+diff --git a/kernel/sched/pelt.h b/kernel/sched/pelt.h
+index 10a7a1d50cfc..cc1b871904ed 100644
+--- a/kernel/sched/pelt.h
++++ b/kernel/sched/pelt.h
+@@ -5,6 +5,7 @@ int __update_load_avg_se(u64 now, int cpu, struct cfs_rq *cfs_rq, struct sched_e
+ int __update_load_avg_cfs_rq(u64 now, int cpu, struct cfs_rq *cfs_rq);
+ int __update_load_avg_se_qos(u64 now, int cpu, struct qos_rq *qos_rq, struct sched_qos_entity *se);
+ int __update_load_avg_qos_rq(u64 now, int cpu, struct qos_rq *qos_rq);
++int update_load_avg_qos_rq(u64 now, struct rq *rq);
+ int update_rt_rq_load_avg(u64 now, struct rq *rq, int running);
+ int update_dl_rq_load_avg(u64 now, struct rq *rq, int running);
+ 
+diff --git a/kernel/sched/qos.c b/kernel/sched/qos.c
+index 2f8be43404c5..0a562bf12f0b 100644
+--- a/kernel/sched/qos.c
++++ b/kernel/sched/qos.c
+@@ -50,6 +50,7 @@ static inline void
+ update_stats_curr_start(struct qos_rq *qos, struct sched_entity *se);
+ static void _dequeue_pushable_task(struct rq *rq, struct sched_qos_entity *se_qos);
+ static inline void update_se_load_avg(struct qos_rq *qos_rq, struct sched_qos_entity *se, int flags);
++static void update_blocked_averages(int cpu);
+ 
+ 
+ static unsigned int sched_nr_latency = 8;
+@@ -82,6 +83,80 @@ static unsigned int sched_nr_latency = 8;
+ #define SKIP_AGE_LOAD	0x2
+ #define DO_ATTACH	0x4
+ 
++enum fbq_type { regular, remote, all };
++
++enum group_type {
++	group_other = 0,
++	group_imbalanced,
++	group_overloaded,
++};
++
++struct lb_env {
++	struct sched_domain	*sd;
++	struct rq		*src_rq;
++	int			src_cpu;
++
++	int			dst_cpu;
++	struct rq		*dst_rq;
++
++	struct cpumask		*dst_grpmask;
++	int			new_dst_cpu;
++	enum cpu_idle_type	idle;
++	long			imbalance;
++	/* The set of CPUs under consideration for load-balancing */
++	struct cpumask		*cpus;
++
++	unsigned int		flags;
++
++	unsigned int		loop;
++	unsigned int		loop_break;
++	unsigned int		loop_max;
++
++	enum fbq_type		fbq_type;
++	struct list_head	tasks;
++};
++
++/*
++ * sg_lb_stats - stats of a sched_group required for load_balancing
++ */
++struct sg_lb_stats {
++	unsigned long avg_load; /*Avg load across the CPUs of the group */
++	unsigned long group_load; /* Total load over the CPUs of the group */
++	unsigned long load_per_task;
++	unsigned long group_capacity;
++	unsigned long group_util; /* Total utilization of the group */
++	unsigned int sum_nr_running; /* Nr tasks running in the group */
++	unsigned int idle_cpus;
++	unsigned int group_weight;
++	enum group_type group_type;
++	int group_no_capacity;
++#ifdef CONFIG_NUMA_BALANCING
++	unsigned int nr_numa_running;
++	unsigned int nr_preferred_running;
++#endif
++};
++
++/*
++ * sd_lb_stats - Structure to store the statistics of a sched_domain
++ *		 during load balancing.
++ */
++struct sd_lb_stats {
++	struct sched_group *busiest;	/* Busiest group in this sd */
++	struct sched_group *local;	/* Local group in this sd */
++	unsigned long total_running;
++	unsigned long total_load;	/* Total load of all groups in sd */
++	unsigned long total_capacity;	/* Total capacity of all groups in sd */
++	unsigned long avg_load;	/* Average load across all groups in sd */
++
++	struct sg_lb_stats busiest_stat;/* Statistics of the busiest group */
++	struct sg_lb_stats local_stat;	/* Statistics of the local group */
++};
++
++DEFINE_PER_CPU(cpumask_var_t, qos_load_balance_mask);
++DEFINE_PER_CPU(cpumask_var_t, qos_select_idle_mask);
++static unsigned long __read_mostly max_load_balance_interval = HZ/10;
++static const unsigned int sched_nr_migrate_break = 32;
++
+ static inline struct qos_rq *qos_rq_of_se(struct sched_qos_entity *se)
+ {
+ 	return se->qos_rq;
+@@ -134,6 +209,11 @@ static inline void
+ enqueue_runnable_load_avg(struct qos_rq *qos_rq, struct sched_qos_entity *se)
+ {
+ 	qos_rq->runnable_weight += se->runnable_weight;
++	printk("zz %s runnable_weight:%lx %lx\n",__func__
++			, (unsigned long)se->runnable_weight
++			, (unsigned long)se
++
++			);
+ 
+ 	qos_rq->avg.runnable_load_avg += se->avg.runnable_load_avg;
+ 	qos_rq->avg.runnable_load_sum += se_qos_runnable(se) * se->avg.runnable_load_sum;
+@@ -167,6 +247,7 @@ static inline void update_load_add(struct load_weight *lw, unsigned long inc)
+ 	BUG_ON(lw->weight < 0);
+ 	lw->weight += inc;
+ 	lw->inv_weight = 0;
++	dump_stack();
+ }
+ 
+ static inline void update_load_sub(struct load_weight *lw, unsigned long dec)
+@@ -578,6 +659,8 @@ enqueue_qos_rq(struct qos_rq *qos_rq, struct sched_qos_entity *se_qos)
+ 	enqueue_pushable_task(rq, se_qos);
+ #endif
+ 
++	update_se_load_avg(qos_rq, se_qos, UPDATE_TG | DO_ATTACH);
++
+ 	se_qos->on_rq = 1;
+ 	inc_qos_tasks(se_qos, qos_rq);
+ 
+@@ -604,7 +687,6 @@ enqueue_task_qos(struct rq *rq, struct task_struct *p, int flags)
+ 	}
+ }
+ 
+-
+ static void dequeue_task_qos(struct rq *rq, struct task_struct *p, int flags)
+ {
+ 	struct sched_qos_entity *se_qos = &p->qos;
+@@ -658,6 +740,363 @@ static struct sched_qos_entity *__pick_first_entity(struct qos_rq *qos_rq)
+ 	return rb_entry(left, struct sched_qos_entity, run_node);
+ }
+ 
++static inline void init_sd_lb_stats(struct sd_lb_stats *sds)
++{
++	/*
++	 * Skimp on the clearing to avoid duplicate work. We can avoid clearing
++	 * local_stat because update_sg_lb_stats() does a full clear/assignment.
++	 * We must however clear busiest_stat::avg_load because
++	 * update_sd_pick_busiest() reads this before assignment.
++	 */
++	*sds = (struct sd_lb_stats){
++		.busiest = NULL,
++		.local = NULL,
++		.total_running = 0UL,
++		.total_load = 0UL,
++		.total_capacity = 0UL,
++		.busiest_stat = {
++			.avg_load = 0UL,
++			.sum_nr_running = 0,
++			.group_type = group_other,
++		},
++	};
++}
++
++
++static inline unsigned long
++get_sd_balance_interval(struct sched_domain *sd, int cpu_busy)
++{
++	unsigned long interval = sd->balance_interval;
++
++	if (cpu_busy)
++		interval *= sd->busy_factor;
++
++	/* scale ms to jiffies */
++	interval = msecs_to_jiffies(interval);
++	interval = clamp(interval, 1UL, max_load_balance_interval);
++
++	return interval;
++}
++
++static inline void
++update_next_balance(struct sched_domain *sd, unsigned long *next_balance)
++{
++	unsigned long interval, next;
++
++	/* used by idle balance, so cpu_busy = 0 */
++	interval = get_sd_balance_interval(sd, 0);
++	next = sd->last_balance + interval;
++
++	if (time_after(*next_balance, next))
++		*next_balance = next;
++}
++
++#define QOS_LBF_ALL_PINNED	0x01
++#define QOS_LBF_NEED_BREAK	0x02
++#define QOS_LBF_DST_PINNED  0x04
++#define QOS_LBF_SOME_PINNED	0x08
++#define QOS_LBF_NOHZ_STATS	0x10
++#define QOS_LBF_NOHZ_AGAIN	0x20
++
++static unsigned long capacity_orig_of(int cpu)
++{
++	return cpu_rq(cpu)->cpu_capacity_orig;
++}
++
++static inline unsigned long cpu_util(int cpu)
++{
++	struct qos_rq *qos_rq;
++	unsigned int util;
++
++	qos_rq = &cpu_rq(cpu)->qos;
++	util = READ_ONCE(qos_rq->avg.util_avg);
++
++	if (sched_feat(UTIL_EST))
++		util = max(util, READ_ONCE(qos_rq->avg.util_est.enqueued));
++
++	return min_t(unsigned long, util, capacity_orig_of(cpu));
++}
++
++static inline unsigned long qos_rq_runnable_load_avg(struct qos_rq *qos_rq)
++{
++	return qos_rq->avg.runnable_load_avg;
++}
++
++static unsigned long weighted_cpuload(struct rq *rq)
++{
++	return qos_rq_runnable_load_avg(&rq->qos);
++}
++
++static unsigned long capacity_of(int cpu)
++{
++	return cpu_rq(cpu)->cpu_capacity;
++}
++
++static noinline void update_sg_lb_stats(struct lb_env *env,
++			struct sched_group *group,
++			struct sg_lb_stats *sgs, bool *overload)
++{
++	int i, nr_running;
++
++	memset(sgs, 0, sizeof(*sgs));
++
++	for_each_cpu_and(i, sched_group_span(group), env->cpus) {
++		struct rq *rq = cpu_rq(i);
++
++#if 0
++		if ((env->flags & QOS_LBF_NOHZ_STATS) && update_nohz_stats(rq, false))
++			env->flags |= QOS_LBF_NOHZ_AGAIN;
++#endif
++
++		sgs->group_load += weighted_cpuload(rq);
++		sgs->group_util += cpu_util(i);
++		sgs->sum_nr_running += rq->cfs.h_nr_running;
++
++		nr_running = rq->nr_running;
++		if (nr_running > 1)
++			*overload = true;
++
++#ifdef CONFIG_NUMA_BALANCING
++		sgs->nr_numa_running += rq->nr_numa_running;
++		sgs->nr_preferred_running += rq->nr_preferred_running;
++#endif
++		/*
++		 * No need to call idle_cpu() if nr_running is not 0
++		 */
++		if (!nr_running && idle_cpu(i))
++			sgs->idle_cpus++;
++		printk("zz cpu%d group_load:%lx group_util:%lx sum_nr_running:%lx nr_numa_running:%lx nr_preferred_running:%lx \n"
++				, i
++				, (unsigned long)sgs->group_load, (unsigned long)sgs->group_util
++				, (unsigned long)sgs->sum_nr_running, (unsigned long)sgs->nr_numa_running
++				, (unsigned long)sgs->nr_preferred_running
++				);
++	}
++
++}
++
++/**
++ * update_sd_lb_stats - Update sched_domain's statistics for load balancing.
++ * @env: The load balancing environment.
++ * @sds: variable to hold the statistics for this sched_domain.
++ */
++static inline void update_sd_lb_stats(struct lb_env *env, struct sd_lb_stats *sds)
++{
++	struct sched_group *sg = env->sd->groups;
++	struct sg_lb_stats *local = &sds->local_stat;
++	struct sg_lb_stats tmp_sgs;
++	bool overload = false;
++
++	do {
++		struct sg_lb_stats *sgs = &tmp_sgs;
++		int local_group;
++
++		local_group = cpumask_test_cpu(env->dst_cpu, sched_group_span(sg));
++		if (local_group) {
++			sds->local = sg;
++			sgs = local;
++
++			if (env->idle != CPU_NEWLY_IDLE ||
++			    time_after_eq(jiffies, sg->sgc->next_update))
++				update_group_capacity(env->sd, env->dst_cpu);
++		}
++
++		update_sg_lb_stats(env, sg, sgs, &overload);
++		//trace_printk("zz %s sg:%lx \n",__func__, (unsigned long)sg);
++		sg = sg->next;
++	} while (sg != env->sd->groups);
++
++}
++
++static struct sched_group *qos_find_busiest_group(struct lb_env *env)
++{
++	struct sg_lb_stats *local, *busiest;
++	struct sd_lb_stats sds;
++
++	init_sd_lb_stats(&sds);
++
++	update_sd_lb_stats(env, &sds);
++
++out_balanced:
++	env->imbalance = 0;
++	return NULL;
++}
++
++static int should_we_balance(struct lb_env *env)
++{
++	struct sched_group *sg = env->sd->groups;
++	int cpu, balance_cpu = -1;
++
++	/*
++	 * Ensure the balancing environment is consistent; can happen
++	 * when the softirq triggers 'during' hotplug.
++	 */
++	if (!cpumask_test_cpu(env->dst_cpu, env->cpus))
++		return 0;
++
++	/*
++	 * In the newly idle case, we will allow all the CPUs
++	 * to do the newly idle load balance.
++	 */
++	if (env->idle == CPU_NEWLY_IDLE)
++		return 1;
++
++	/* Try to find first idle CPU */
++	for_each_cpu_and(cpu, group_balance_mask(sg), env->cpus) {
++		if (!idle_cpu(cpu))
++			continue;
++
++		balance_cpu = cpu;
++		break;
++	}
++
++	if (balance_cpu == -1)
++		balance_cpu = group_balance_cpu(sg);
++
++	/*
++	 * First idle CPU or the first CPU(busiest) in this sched group
++	 * is eligible for doing load balancing at this and above domains.
++	 */
++	return balance_cpu == env->dst_cpu;
++}
++noinline int qos_load_balance(int this_cpu, struct rq *this_rq,
++			struct sched_domain *sd, enum cpu_idle_type idle,
++			int *continue_balancing)
++{
++	int ld_moved = 0, cur_ld_moved = 0, active_balance = 0;
++	struct sched_domain *sd_parent = sd->parent;
++	struct sched_group *group;
++	struct rq *busiest;
++	struct rq_flags rf;
++	struct cpumask *cpus = this_cpu_cpumask_var_ptr(qos_load_balance_mask);
++
++	struct lb_env env = {
++		.sd		= sd,
++		.dst_cpu	= this_cpu,
++		.dst_rq		= this_rq,
++		.dst_grpmask    = sched_group_span(sd->groups),
++		.idle		= idle,
++		.loop_break	= sched_nr_migrate_break,
++		.cpus		= cpus,
++		.fbq_type	= all,
++		.tasks		= LIST_HEAD_INIT(env.tasks),
++	};
++
++	cpumask_and(cpus, sched_domain_span(sd), cpu_active_mask);
++
++	schedstat_inc(sd->lb_count[idle]);
++
++redo:
++	if (!should_we_balance(&env)) {
++		*continue_balancing = 0;
++		goto out_balanced;
++	}
++
++	group = qos_find_busiest_group(&env);
++	if (!group) {
++		schedstat_inc(sd->lb_nobusyg[idle]);
++		goto out_balanced;
++	}
++
++out_balanced:
++	return ld_moved;
++}
++
++noinline int qos_idle_balance(struct rq *this_rq, struct rq_flags *rf)
++{
++	unsigned long next_balance = jiffies + HZ;
++	int this_cpu = this_rq->cpu;
++	struct sched_domain *sd;
++	int pulled_task = 0;
++	u64 curr_cost = 0;
++
++	this_rq->idle_stamp = rq_clock(this_rq);
++
++	if (!cpu_active(this_cpu))
++		return 0;
++
++	rq_unpin_lock(this_rq, rf);
++
++	if (this_rq->avg_idle < sysctl_sched_migration_cost ||
++	    !this_rq->rd->overload) {
++		rcu_read_lock();
++		sd = rcu_dereference_check_sched_domain(this_rq->sd);
++		if (sd)
++			update_next_balance(sd, &next_balance);
++		rcu_read_unlock();
++
++		//nohz_newidle_balance(this_rq);
++		//update_blocked_averages(this_cpu);
++		//trace_printk("zz %s %d nohz\n", __func__, __LINE__);
++
++		goto out;
++	} 
++
++	//goto out;
++	raw_spin_unlock(&this_rq->lock);
++
++	update_blocked_averages(this_cpu);
++	rcu_read_lock();
++	for_each_domain(this_cpu, sd) {
++		int continue_balancing = 1;
++		u64 t0, domain_cost;
++
++		if (!(sd->flags & SD_LOAD_BALANCE))
++			continue;
++
++		if (this_rq->avg_idle < curr_cost + sd->max_newidle_lb_cost) {
++			update_next_balance(sd, &next_balance);
++			break;
++		}
++
++		if (sd->flags & SD_BALANCE_NEWIDLE) {
++			t0 = sched_clock_cpu(this_cpu);
++
++			pulled_task = qos_load_balance(this_cpu, this_rq,
++						   sd, CPU_NEWLY_IDLE,
++						   &continue_balancing);
++
++			domain_cost = sched_clock_cpu(this_cpu) - t0;
++			if (domain_cost > sd->max_newidle_lb_cost)
++				sd->max_newidle_lb_cost = domain_cost;
++
++			curr_cost += domain_cost;
++		}
++
++		//update_next_balance(sd, &next_balance);
++
++		/*
++		 * Stop searching for tasks to pull if there are
++		 * now runnable tasks on this rq.
++		 */
++		if (pulled_task || this_rq->nr_running > 0)
++			break;
++	}
++	rcu_read_unlock();
++
++	raw_spin_lock(&this_rq->lock);
++
++	if (curr_cost > this_rq->max_idle_balance_cost)
++		this_rq->max_idle_balance_cost = curr_cost;
++
++out:
++	if (this_rq->qos.qos_nr_running && !pulled_task)
++		pulled_task = 1;
++
++	if (time_after(this_rq->next_balance, next_balance))
++		this_rq->next_balance = next_balance;
++
++	if (this_rq->nr_running != this_rq->qos.qos_nr_running)
++		pulled_task = -1;
++
++	if (pulled_task)
++		this_rq->idle_stamp = 0;
++
++	rq_repin_lock(this_rq, rf);
++
++	return pulled_task;
++}
++
+ static struct task_struct *
+ pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ {
+@@ -665,7 +1104,9 @@ pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ 	struct qos_rq *qos_rq = &rq->qos;
+ 	struct sched_qos_entity *left;
+ 	struct sched_qos_entity *se, *curr;
++	int new_tasks;
+ 
++again:
+ 	if (!qos_rq->qos_nr_running)
+ 		goto idle;
+ 
+@@ -715,10 +1156,18 @@ pick_next_task_qos(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ 		qos_rq->curr = NULL;
+ #endif
+ 
+-	MEDEBUG("zz %s %d %lx %d %lx\n", __func__, __LINE__, (unsigned long)se, qos_rq->qos_nr_running, qos_rq->curr);
++	MEDEBUG("zz %s %d %lx %d %lx\n", __func__, __LINE__, (unsigned long)se, qos_rq->qos_nr_running, (unsigned long)qos_rq->curr);
++	return p;
+ 			
+ idle:
+-	return p;
++	new_tasks = qos_idle_balance(rq, rf);
++	if (new_tasks < 0)
++		return RETRY_TASK;
++
++	if (new_tasks > 0)
++		goto again;
++
++	return NULL;
+ }
+ 
+ static inline int on_qos_rq(struct sched_qos_entity *qos_se)
+@@ -800,11 +1249,17 @@ static void attach_entity_load_avg(struct qos_rq *qos_rq, struct sched_qos_entit
+ 	}
+ 
+ 	se->avg.runnable_load_sum = se->avg.load_sum;
++
++	enqueue_load_avg(qos_rq, se);
++	enqueue_runnable_load_avg(qos_rq, se);
++	qos_rq->avg.util_avg += se->avg.util_avg;
++	qos_rq->avg.util_sum += se->avg.util_sum;
+ }
+ 
+ static void detach_entity_load_avg(struct qos_rq *qos_rq, struct sched_qos_entity *se)
+ {
+ 	dequeue_load_avg(qos_rq, se);
++	dequeue_runnable_load_avg(qos_rq, se);
+ 	sub_positive(&qos_rq->avg.util_avg, se->avg.util_avg);
+ 	sub_positive(&qos_rq->avg.util_sum, se->avg.util_sum);
+ 
+@@ -813,7 +1268,7 @@ static void detach_entity_load_avg(struct qos_rq *qos_rq, struct sched_qos_entit
+ 	//qos_rq_util_change(qos_rq, 0);
+ }
+ 
+-static inline int
++int
+ update_qos_rq_load_avg(u64 now, struct qos_rq *qos_rq)
+ {
+ 	struct sched_avg *sa = &qos_rq->avg;
+@@ -825,6 +1280,36 @@ update_qos_rq_load_avg(u64 now, struct qos_rq *qos_rq)
+ 	return decayed;
+ }
+ 
++static void update_blocked_averages(int cpu)
++{
++	struct rq *rq = cpu_rq(cpu);
++	struct qos_rq *qos_rq = &rq->qos;
++	struct rq_flags rf;
++	rq_lock_irqsave(rq, &rf);
++	update_rq_clock(rq);
++
++#if 0
++	trace_printk("zz load_avg:%ld/%ld runnable_load_avg:%ld %lx+\n"
++			, (unsigned long)qos_rq->avg.load_avg
++			, (unsigned long)qos_rq->avg.load_sum
++			, (unsigned long)qos_rq->avg.runnable_load_avg
++			, (unsigned long)qos_rq->load.weight
++			);
++#endif
++	update_qos_rq_load_avg(rq_clock_task(rq), qos_rq);
++#if 0
++	trace_printk("zz load_avg:%ld/%ld runnable_load_avg:%ld -\n"
++			, (unsigned long)qos_rq->avg.load_avg
++			, (unsigned long)qos_rq->avg.load_sum
++			, (unsigned long)qos_rq->avg.runnable_load_avg);
++#endif
++#ifdef CONFIG_NO_HZ_COMMON
++	//rq->last_blocked_load_update_tick = jiffies;
++#endif
++
++	rq_unlock_irqrestore(rq, &rf);
++}
++
+ static inline void update_se_load_avg(struct qos_rq *qos_rq, struct sched_qos_entity *se, int flags)
+ {
+ 	struct rq *rq = rq_of_qos_rq(qos_rq);
+@@ -833,9 +1318,9 @@ static inline void update_se_load_avg(struct qos_rq *qos_rq, struct sched_qos_en
+ 
+ 	if (se->avg.last_update_time)
+ 		__update_load_avg_se_qos(now, cpu, qos_rq, se);
+-	else {
++
++	if (!se->avg.last_update_time && (flags & DO_ATTACH))
+ 		attach_entity_load_avg(qos_rq, se, 0);
+-	}
+ 
+ 	update_qos_rq_load_avg(now, qos_rq);
+ }
+@@ -845,7 +1330,6 @@ static void enqueue_pushable_task(struct rq *rq, struct sched_qos_entity *se_qos
+ 	struct qos_rq *qos_rq = &rq->qos;
+ 	bool curr = qos_rq->curr == se_qos;
+ 
+-	update_se_load_avg(qos_rq, se_qos, UPDATE_TG | DO_ATTACH);
+ 	if (!curr)
+ 		_enqueue_pushable_task(rq, se_qos);
+ }
+@@ -1008,7 +1492,7 @@ static void task_tick_qos(struct rq *rq, struct task_struct *p, int queued)
+ 		
+ 	}
+ 
+-	//update_qos_rq_load_avg(rq_clock_task(rq), rq, 1);
++	//update_qos_rq_load_avg(rq_clock_task(rq), qos_rq);
+ 
+ }
+ 
+@@ -1037,9 +1521,9 @@ static void switched_to_qos(struct rq *rq, struct task_struct *p)
+ 	update_load_set(&se_qos->load, NICE_0_LOAD);
+ 	update_load_add(&qos_rq->load, se_qos->load.weight);
+ 
+-	if (task_on_rq_queued(p) && rq->curr != p) {
++	printk("zz %s %ld %ld\n",__func__, (unsigned long)p->qos.load.weight, p->qos.runnable_weight);
++	if (task_on_rq_queued(p) && rq->curr != p)
+ 		resched_curr(rq);
+-	}
+ 
+ 	MEDEBUG("zz cpu:%d %s %d \n", smp_processor_id(), __func__, __LINE__);
+ }
+@@ -1217,5 +1701,12 @@ select_task_rq_qos(struct task_struct *p, int cpu, int sd_flag, int flags)
+ 
+ void __init init_sched_qos_class(void)
+ {
++	int i;
++	for_each_possible_cpu(i) {
++		per_cpu(qos_load_balance_mask, i) = (cpumask_var_t)kzalloc_node(
++			cpumask_size(), GFP_KERNEL, cpu_to_node(i));
++		per_cpu(qos_select_idle_mask, i) = (cpumask_var_t)kzalloc_node(
++			cpumask_size(), GFP_KERNEL, cpu_to_node(i));
++	}
+ 
+ }
+-- 
+2.34.1
+
